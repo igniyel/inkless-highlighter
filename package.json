@@ -17,7 +17,7 @@
     "annotation",
     "reading-mode"
   ],
-  "author": "Claude (Anthropic)",
+  "author": "brijesh",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.11.0",

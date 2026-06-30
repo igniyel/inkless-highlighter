@@ -4,8 +4,8 @@
   "version": "1.0.0",
   "minAppVersion": "1.4.0",
   "description": "Highlight and underline text in Reading view by dragging to select — non-destructive (never edits your notes), with a colour palette and no hotkeys required.",
-  "author": "Claude (Anthropic) for the requesting user",
-  "authorUrl": "https://obsidian.md",
+  "author": "brijesh",
+  "authorUrl": "https://brijesh.fyi",
   "fundingUrl": "",
   "isDesktopOnly": false
 }
