@@ -172,9 +172,13 @@ On every render the engine:
 2. Builds a whitespace-normalised copy of that text **plus a map back to the raw
    character offsets**, so a match in normalised space can be translated to real
    DOM positions.
-3. Finds every position of `exact`. If there is exactly one, it wins. If there
-   are several, each candidate is scored by how much of its surrounding text
-   matches the stored `prefix`/`suffix`, with `occurrence` breaking ties.
+3. Finds every position of `exact` and keeps the one whose surrounding text best
+   matches the stored `prefix`/`suffix` (with `occurrence` breaking ties) — but
+   **only if that context is convincing**. A bare repeat of the same words in a
+   different place, with different surroundings, is deliberately left untouched.
+   This matters because Obsidian renders Reading view section by section, so
+   without the context check the same record would be re-applied to every
+   section that merely repeats its words.
 4. **If `exact` is gone** — because you edited the annotated sentence — it
    *re-anchors* instead of giving up: it brackets the annotation between the
    strongest anchor on each side (the stored context, or the selection's own
@@ -317,8 +321,11 @@ appearance is snapshotted).
   as first-class blocks and can be annotated.
 - **Code.** Skipped by default (configurable). Inline and fenced code are never
   wrapped, and their text is excluded from matching so offsets stay correct.
-- **Duplicate text in a block** (e.g. the word "set" twice). Disambiguated by
-  the stored prefix/suffix context and the occurrence index.
+- **Duplicate text in the note** (e.g. the word "set" in several places).
+  Disambiguated by the stored prefix/suffix context and the occurrence index:
+  the annotation sticks to the one place whose surroundings match, and other
+  copies of the same words — in the same block or any other section — are left
+  untouched.
 - **Lazy rendering of long notes.** Obsidian renders Reading view in sections as
   you scroll; the post-processor runs per section, so annotations appear as
   their text scrolls into view.
@@ -444,9 +451,11 @@ organised as:
   context or its first and last words still survive. If you replaced the whole
   passage — anchors and all — there is nothing left to latch onto; increase
   "Context length" for more resilience, or re-create the annotation.
-- **An annotation jumped to a different copy of the same phrase.** Very repetitive
-  text with little surrounding context is ambiguous; select a slightly longer
-  phrase, or increase "Context length".
+- **An annotation jumped to, or duplicated onto, a different copy of the same
+  words.** This is prevented: a match is only applied where the surrounding
+  context agrees. If a genuine annotation ever fails to appear because its
+  context was heavily edited on both sides, increase "Context length" or
+  re-create it.
 - **Highlights look too faint on my dark theme.** Raise the opacity or turn on
   "High-contrast outline".
 - **I want the highlights inside the note itself.** Use **Copy note's

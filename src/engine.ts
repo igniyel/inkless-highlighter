@@ -284,10 +284,56 @@ function commonPrefixLen(a: string, b: string): number {
   return i;
 }
 
+/** Characters of matching context required to trust an occurrence. */
+const CTX_MIN_ABS = 8;
+
+/**
+ * How many characters of the stored prefix/suffix actually match the text
+ * around a candidate occurrence. The boundary space between context and the
+ * annotated word is dropped first, because `prefix`/`suffix` are stored trimmed
+ * while the rendered text keeps the separating space.
+ */
+function contextMatch(
+  norm: string,
+  s: number,
+  e: number,
+  wantPrefix: string,
+  wantSuffix: string,
+): number {
+  let pm = 0;
+  if (wantPrefix) {
+    let before = norm.slice(Math.max(0, s - wantPrefix.length - 1), s);
+    if (before.endsWith(" ")) before = before.slice(0, -1);
+    pm = commonSuffixLen(before, wantPrefix);
+  }
+  let sm = 0;
+  if (wantSuffix) {
+    let after = norm.slice(e, e + wantSuffix.length + 1);
+    if (after.startsWith(" ")) after = after.slice(1);
+    sm = commonPrefixLen(after, wantSuffix);
+  }
+  return pm + sm;
+}
+
+/**
+ * Is `matched` characters of context enough to believe this is the real spot?
+ * With no stored context (a whole-block selection) there is nothing to check.
+ * Otherwise require a solid run of matching context — enough to rule out a
+ * different place that merely repeats the same words.
+ */
+function contextConvincing(matched: number, want: number): boolean {
+  if (want === 0) return true;
+  return matched >= Math.min(want, CTX_MIN_ABS);
+}
+
 /**
  * Locate `rec` within a normalised string. Returns the [start, end) range in
- * normalised coordinates, or null if not found. Uses prefix/suffix context and
- * the stored occurrence index to disambiguate repeated text.
+ * normalised coordinates, or null if not found.
+ *
+ * Critically, a match is accepted only when its surrounding context is
+ * convincing. Obsidian runs the post-processor per rendered section, so without
+ * this check the same record would be wrapped in *every* section that happens
+ * to repeat its words — highlighting unrelated duplicates elsewhere in the note.
  */
 function findInNorm(
   norm: string,
@@ -304,24 +350,26 @@ function findInNorm(
   // The exact text is gone (the user edited it): re-anchor by surrounding
   // context so the annotation survives instead of vanishing.
   if (starts.length === 0) return findFuzzy(norm, rec, target);
-  if (starts.length === 1) return { s: starts[0], e: starts[0] + target.length };
 
   const wantPrefix = normStore(rec.prefix);
   const wantSuffix = normStore(rec.suffix);
+
+  // Pick the occurrence whose context matches best (occurrence index breaks
+  // ties), then accept it only if that context clears the bar.
   let best = starts[0];
-  let bestScore = -1;
+  let bestMatched = -1;
+  let bestAdj = -Infinity;
   starts.forEach((s, rank) => {
-    const e = s + target.length;
-    const before = norm.slice(Math.max(0, s - wantPrefix.length), s);
-    const after = norm.slice(e, e + wantSuffix.length);
-    let score = commonSuffixLen(before, wantPrefix) + commonPrefixLen(after, wantSuffix);
-    // Light tie-break toward the recorded occurrence rank.
-    score = score * 100 - Math.abs(rank - rec.occurrence);
-    if (score > bestScore) {
-      bestScore = score;
+    const matched = contextMatch(norm, s, s + target.length, wantPrefix, wantSuffix);
+    const adj = matched * 1000 - Math.abs(rank - rec.occurrence);
+    if (adj > bestAdj) {
+      bestAdj = adj;
       best = s;
+      bestMatched = matched;
     }
   });
+
+  if (!contextConvincing(bestMatched, wantPrefix.length + wantSuffix.length)) return null;
   return { s: best, e: best + target.length };
 }
 
