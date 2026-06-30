@@ -304,6 +304,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
       colorId,
       color,
       opacity: this.settings.highlightOpacity,
+      neon: this.settings.neonEffect,
       underline: tool === "underline" ? { ...this.settings.underline } : undefined,
       exact: part.exact,
       prefix: part.prefix,

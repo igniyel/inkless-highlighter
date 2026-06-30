@@ -52,6 +52,12 @@ export interface HighlightRecord {
   color: string;
   /** Background opacity for highlights (0..1). Ignored for underlines. */
   opacity: number;
+  /**
+   * Whether this annotation was created with the neon glow effect enabled.
+   * Snapshotted (like colour and opacity) so appearance survives later changes
+   * to the global default.
+   */
+  neon?: boolean;
   /** Underline options snapshot. Present only for underline records. */
   underline?: UnderlineStyleOptions;
 
@@ -99,6 +105,12 @@ export interface PluginSettings {
   lastUnderlineColorId: string;
   /** Default background opacity for new highlights (0..1). */
   highlightOpacity: number;
+  /**
+   * Add a luminous neon glow to new annotations. The default palette colours
+   * are tuned to read well both as a glowing highlight and as a crisp
+   * underline, so this works for either tool.
+   */
+  neonEffect: boolean;
   /** Default underline options for new underlines. */
   underline: UnderlineStyleOptions;
 

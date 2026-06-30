@@ -3,69 +3,55 @@
   "settings": {
     "palette": [
       {
-        "id": "c-orange",
-        "name": "Orange",
-        "color": "#ffb74d"
-      },
-      {
         "id": "c-yellow",
-        "name": "Yellow",
-        "color": "#ffd54f"
-      },
-      {
-        "id": "c-blue",
-        "name": "Blue",
-        "color": "#64b5f6"
-      },
-      {
-        "id": "c-teal",
-        "name": "Teal",
-        "color": "#4db6ac"
+        "name": "Citrus",
+        "color": "#ffe14d"
       },
       {
         "id": "c-green",
-        "name": "Green",
-        "color": "#81c784"
+        "name": "Lime",
+        "color": "#46f08c"
       },
       {
-        "id": "c-purple",
-        "name": "Purple",
-        "color": "#ba68c8"
-      },
-      {
-        "id": "c-red",
-        "name": "Red",
-        "color": "#e57373"
+        "id": "c-cyan",
+        "name": "Aqua",
+        "color": "#33e1ff"
       },
       {
         "id": "c-pink",
-        "name": "Pink",
-        "color": "#f06292"
+        "name": "Magenta",
+        "color": "#ff5fb0"
+      },
+      {
+        "id": "c-orange",
+        "name": "Coral",
+        "color": "#ff8a3d"
       }
     ],
     "defaultTool": "highlight",
     "lastHighlightColorId": "c-yellow",
-    "lastUnderlineColorId": "c-red",
-    "highlightOpacity": 0.55,
+    "lastUnderlineColorId": "c-pink",
+    "highlightOpacity": 0.4,
+    "neonEffect": false,
     "underline": {
-      "thickness": 3,
+      "thickness": 2,
       "style": "solid",
-      "offset": 5
+      "offset": 3
     },
     "stickyTool": true,
-    "swapClickRoles": true,
+    "swapClickRoles": false,
     "clearSelectionAfter": true,
     "confirmDelete": false,
     "skipCodeBlocks": true,
     "applyInLivePreview": true,
-    "contextLength": 80,
+    "contextLength": 32,
     "followRenames": true,
     "pruneOnDelete": false,
     "showToolbar": true,
     "toolbarPlacement": {
       "corner": "br",
-      "x": 653.70703125,
-      "y": 0
+      "x": null,
+      "y": null
     },
     "showEraser": true,
     "showSettingsButton": true,

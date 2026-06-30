@@ -56,9 +56,31 @@
   color: var(--text-on-accent);
 }
 
+/* Force the Lucide glyph to render at a predictable size on every platform —
+   some mobile themes otherwise collapse an unsized inline SVG to zero. */
 .rhl-tool-btn .svg-icon {
+  display: block;
+  flex: 0 0 auto;
   width: 18px;
   height: 18px;
+  color: currentColor;
+  stroke: currentColor;
+}
+
+/* Touch devices (phone / iPad): roomier targets and a slightly larger glyph. */
+.rhl-toolbar.is-touch {
+  gap: 4px;
+  padding: 6px;
+}
+
+.rhl-toolbar.is-touch .rhl-tool-btn {
+  width: 40px;
+  height: 40px;
+}
+
+.rhl-toolbar.is-touch .rhl-tool-btn .svg-icon {
+  width: 22px;
+  height: 22px;
 }
 
 .rhl-grip {
@@ -98,6 +120,10 @@
   box-shadow: var(--shadow-l, 0 8px 30px rgba(0, 0, 0, 0.3));
 }
 
+.rhl-popover-header {
+  margin-bottom: 10px;
+}
+
 .rhl-popover-title {
   font-weight: var(--font-semibold, 600);
   font-size: var(--font-ui-small, 13px);
@@ -105,9 +131,20 @@
   margin-bottom: 8px;
 }
 
+.rhl-popover-header .rhl-popover-title {
+  margin-bottom: 2px;
+}
+
+.rhl-popover-subtitle {
+  font-size: var(--font-ui-smaller, 12px);
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+/* Fixed six-column grid; rows grow with the number of colours. */
 .rhl-swatch-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(28px, 1fr));
+  grid-template-columns: repeat(6, 1fr);
   gap: 6px;
   margin-bottom: 10px;
 }
@@ -115,7 +152,7 @@
 .rhl-swatch {
   width: 100%;
   aspect-ratio: 1 / 1;
-  min-height: 28px;
+  min-height: 0;
   padding: 0;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s, 5px);
@@ -130,6 +167,39 @@
 
 .rhl-swatch.is-selected {
   box-shadow: 0 0 0 2px var(--background-primary), 0 0 0 4px var(--interactive-accent);
+}
+
+/* The "add a colour" tile: a plus inside an inner dashed border. */
+.rhl-swatch-add {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: transparent;
+  border: 1px dashed var(--background-modifier-border-hover, var(--background-modifier-border));
+  color: var(--text-muted);
+}
+
+.rhl-swatch-add::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--radius-s, 5px);
+  pointer-events: none;
+}
+
+.rhl-swatch-add:hover {
+  color: var(--text-normal);
+  border-color: var(--interactive-accent);
+  transform: none;
+}
+
+.rhl-swatch-add .svg-icon {
+  width: 16px;
+  height: 16px;
+  position: relative;
+  z-index: 1;
 }
 
 .rhl-popover-controls {
@@ -168,6 +238,19 @@
   font-size: var(--font-ui-smaller, 12px);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* Neon-glow toggle sits flush to the right of its row. */
+.rhl-control-row .rhl-toggle {
+  margin-left: auto;
+}
+
+/* Inline note inside the "add colour" modal. */
+.rhl-modal-note {
+  margin: 0 0 12px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small, 13px);
+  line-height: 1.5;
 }
 
 .rhl-preview {
@@ -307,14 +390,26 @@ body.rhl-tool-eraser .rhl:hover {
   }
 }
 
-/* Narrow screens: tighten the toolbar so it never overflows. */
-@media (max-width: 480px) {
-  .rhl-toolbar {
+/* Phones and small windows: give the popover room and keep swatches tappable. */
+@media (max-width: 540px) {
+  .rhl-popover {
+    min-width: 0;
+    width: min(360px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+  }
+  .rhl-swatch-grid {
+    gap: 8px;
+  }
+}
+
+/* Very narrow screens: tighten the toolbar so it never overflows. */
+@media (max-width: 380px) {
+  .rhl-toolbar:not(.is-touch) {
     gap: 1px;
     padding: 3px;
   }
-  .rhl-tool-btn {
-    width: 34px;
-    height: 34px;
+  .rhl-toolbar:not(.is-touch) .rhl-tool-btn {
+    width: 32px;
+    height: 32px;
   }
 }

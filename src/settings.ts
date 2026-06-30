@@ -46,16 +46,21 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
     const intro = root.createDiv({ cls: "rhl-settings-intro" });
     intro.createEl("p", {
       text:
-        "Open a note in Reading view. A small toolbar appears in the corner. " +
-        "Pick the highlighter or underline button, then drag across text to " +
-        "annotate it — no editing of the note and no hotkeys required.",
+        "Open any note in Reading view and a compact toolbar appears in the " +
+        "corner. Choose the highlighter or the underline, then drag across text " +
+        "to annotate it — no edits to the note, no hotkeys to remember.",
     });
     intro.createEl("p", {
       text:
-        "Clicking the highlighter or underline button opens its colour palette. " +
-        "Click an existing annotation to recolour, convert, copy, or delete it. " +
-        "Annotations are stored with the plugin (not written into your notes), " +
-        "so the underlying Markdown is never modified.",
+        "On a computer, click a tool to open its colours and options; right-click " +
+        "to simply select it. On a phone or iPad, tap a tool to select it and " +
+        "long-press to open its colours and options.",
+    });
+    intro.createEl("p", {
+      text:
+        "Tap or click any existing annotation to recolour, convert, copy, or " +
+        "remove it. Annotations live with the plugin rather than inside your " +
+        "notes, so the underlying Markdown is never rewritten.",
     });
   }
 
@@ -182,6 +187,20 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
             this.plugin.settings.highlightOpacity = v / 100;
             await this.plugin.persistSettings();
           }),
+      );
+
+    new Setting(root)
+      .setName("Neon glow")
+      .setDesc(
+        "Wrap new annotations in a luminous halo of their own colour. The default " +
+          "palette is tuned for it. Existing annotations keep the look they were " +
+          "created with; you can also toggle this from a tool's options popover.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.neonEffect).onChange(async (v) => {
+          this.plugin.settings.neonEffect = v;
+          await this.plugin.persistSettings();
+        }),
       );
 
     new Setting(root)
@@ -334,9 +353,11 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
 
     const desc = root.createEl("p", { cls: "rhl-settings-note" });
     desc.setText(
-      "These colours appear in every palette popover. Editing a colour here " +
-        "changes future annotations; existing annotations keep the colour they " +
-        "were created with.",
+      "These colours fill every palette. The five defaults are tuned to read " +
+        "well both as a glowing neon highlight and as a crisp underline. Edit a " +
+        "colour here to change future annotations; existing annotations keep the " +
+        "colour they were created with. You can also add a colour on the fly from " +
+        "the “+” tile inside any palette.",
     );
 
     const list = root.createDiv({ cls: "rhl-palette-editor" });
