@@ -263,18 +263,18 @@ settings; on touch, tap selects and long-press opens the options.)
 | Confirm before deleting | Off | Ask before removing an annotation. |
 | Skip code | On | Never annotate inside code blocks / inline code. |
 | Show annotations in Live Preview | On | Also paint (read-only) in the editor's Live Preview. |
-| Context length | 32 | Characters of context stored per side for re-locating. |
+| Context length | 64 | Characters of context stored per side for re-locating. |
 | Follow renames | On | Move annotations with a renamed/moved note. |
-| Delete annotations with note | Off | Remove annotations when the note is deleted. |
+| Delete annotations with note | On | Remove annotations when the note is deleted. |
 
 ### Appearance
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Default highlight opacity | 40% | Starting strength for new highlights. |
+| Default highlight opacity | 50% | Starting strength for new highlights. |
 | Neon glow on highlights | Off | Wrap new highlights in a luminous halo of their colour. |
 | Brighter underlines | Off | Draw new underlines in a more vivid version of their colour (line only). |
-| Default underline thickness | 2 px | Line thickness for new underlines. |
+| Default underline thickness | 3 px | Line thickness for new underlines. |
 | Default underline style | Solid | Line style for new underlines. |
 | Default underline offset | 3 px | Gap between baseline and underline. |
 | High-contrast outline | Off | Adds a subtle border to highlights for low-contrast themes. |
@@ -283,12 +283,12 @@ settings; on touch, tap selects and long-press opens the options.)
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Swap left/right click on tool buttons | Off | Off: left-click opens the palette, right-click selects. On: swap them. |
+| Swap left/right click on tool buttons | On | Off: left-click opens the palette, right-click selects. On: swap them. |
 | Show toolbar in Reading view | On | Hide it entirely if you prefer commands. |
 | Toolbar corner | Bottom right | Where it docks before you drag it (remembered per device). |
 | Reset toolbar position | — | Clears this device's manual drag offset. |
 | Show eraser button | On | Show/hide the eraser. |
-| Show undo/redo buttons | Off | Show undo and redo buttons in the toolbar (the shortcuts work either way). |
+| Show undo/redo buttons | On | Show undo and redo buttons in the toolbar (the shortcuts work either way). |
 | Show settings button | On | Show/hide the gear. |
 
 ### Colour palette

@@ -157,7 +157,9 @@ export class Toolbar {
     this.el.className = "rhl-toolbar";
     if (isTouch()) this.el.classList.add("is-touch");
     this.el.setAttribute("role", "toolbar");
-    this.el.setAttribute("aria-label", "Inkless Highlighter");
+    // No aria-label on the container: Obsidian renders aria-label as a hover
+    // tooltip, and a toolbar-wide "Inkless Highlighter" bubble appears clipped
+    // behind the screen edge. The individual buttons carry their own labels.
     // The tool buttons use right-click / long-press themselves, so suppress
     // the OS context menu over the whole toolbar.
     this.el.addEventListener("contextmenu", (ev) => ev.preventDefault());
@@ -773,7 +775,7 @@ function buildPalettePopover(
   const emphasisRow = controls.createDiv({ cls: "rhl-control-row" });
   emphasisRow.createSpan({
     cls: "rhl-control-label",
-    text: isHighlight ? "Neon glow" : "Brighter",
+    text: isHighlight ? "Neon Glow" : "Brighter",
   });
   const toggle = emphasisRow.createDiv({ cls: "checkbox-container rhl-toggle" });
   if (getEmphasis()) toggle.addClass("is-enabled");

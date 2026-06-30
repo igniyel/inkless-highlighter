@@ -282,8 +282,8 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
     new Setting(root)
       .setName("Swap left/right click on tool buttons")
       .setDesc(
-        "Default: left-click the highlighter or underline button to pick a colour and " +
-          "set options, right-click to only select the tool. Turn this on to swap them.",
+        "When off, left-click the highlighter or underline button to pick a colour and " +
+          "set options, and right-click to only select the tool. Turn this on to swap them.",
       )
       .addToggle((t) =>
         t.setValue(this.plugin.settings.swapClickRoles).onChange(async (v) => {
