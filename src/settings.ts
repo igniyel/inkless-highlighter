@@ -529,8 +529,8 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
       .setName("Export all annotations")
       .setDesc("Download every annotation as a JSON backup.")
       .addButton((b) =>
-        b.setButtonText("Export JSON").onClick(() => {
-          const blob = this.plugin.store.exportAll();
+        b.setButtonText("Export JSON").onClick(async () => {
+          const blob = await this.plugin.store.exportAll();
           downloadJson("inkless-highlighter-backup.json", blob);
           new Notice("Exported annotations.");
         }),
@@ -547,7 +547,7 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
               new Notice("That file does not look like a highlighter backup.");
               return;
             }
-            const added = this.plugin.store.importHighlights(highlights, false);
+            const added = await this.plugin.store.importHighlights(highlights, false);
             await this.plugin.store.persistNow();
             this.plugin.refreshReadingViews();
             this.display();

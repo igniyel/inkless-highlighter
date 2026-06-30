@@ -353,15 +353,28 @@ appearance is snapshotted).
 
 ---
 
-## Performance
+## Performance and storage
 
-- A cheap pre-filter (does the first word of the anchor even appear in this
-  container?) skips most non-matching sections before any expensive work.
-- Text-node collection and normalisation are linear in the rendered text length
-  and run only for notes that actually have annotations.
-- Saves to disk are **debounced** (500 ms) so rapid annotating does not thrash
-  the data file.
-- DOM work wraps existing text nodes in place; no innerHTML rebuilds.
+Annotations are stored as **per-file JSON shards** in the plugin folder, with a
+small `index.json` manifest, rather than one growing `data.json` blob:
+
+- **Incremental writes.** Changing one note rewrites only that note's shard (a
+  few KB), never the whole dataset. Writes are **debounced** (500 ms) and the
+  manifest tracks per-file counts so totals and listings never touch a shard.
+- **Lazy loading + LRU.** A note's annotations load on demand when it is opened
+  or rendered, and idle notes are evicted from memory, so RAM tracks the working
+  set instead of the entire vault. A quick manifest check means unannotated
+  notes load nothing at all.
+- **In-memory indexes.** Each loaded note keeps `byId` and `byGroup` maps, so
+  recolouring, converting and deleting are O(1) instead of array scans.
+- **One-time migration.** An existing `data.json` is migrated into shards on
+  first run (with a `legacy-backup-*.json` kept for safety); settings stay in
+  `data.json`. Shards live in the plugin folder, so annotations still travel
+  with the vault through Obsidian Sync / Git exactly as before.
+
+Matching is also cheap: a pre-filter skips sections whose distinctive anchors do
+not appear, text-node collection is linear in the rendered text, and DOM work
+wraps existing text nodes in place (no innerHTML rebuilds).
 
 ---
 
@@ -370,8 +383,8 @@ appearance is snapshotted).
 - **No HTML injection.** The engine only ever wraps text nodes that are already
   in the document, so note content cannot introduce script or markup through
   this plugin.
-- **No network access.** Nothing is sent anywhere. Annotations live in the
-  plugin's local `data.json`.
+- **No network access.** Nothing is sent anywhere. Annotations live in local
+  JSON shards in the plugin folder.
 - **Your notes are unchanged.** The Markdown on disk is never modified by normal
   use.
 
@@ -430,7 +443,8 @@ organised as:
 | `src/types.ts` | Shared types. |
 | `src/constants.ts` | CSS class names, default palette, default settings. |
 | `src/engine.ts` | Capture, anchoring, matching, and DOM wrapping. |
-| `src/store.ts` | Persistence and per-file annotation storage. |
+| `src/persistence.ts` | Storage adapter contract, shard/manifest types, file-id hashing. |
+| `src/store.ts` | Sharded, indexed, lazily-loaded annotation storage + migration. |
 | `src/ui.ts` | Floating toolbar and popovers. |
 | `src/settings.ts` | Settings tab and palette editor. |
 | `src/main.ts` | Plugin wiring, post-processor, events, commands. |
@@ -490,33 +504,42 @@ organised as:
 
 ## Data format
 
-Stored via Obsidian's `saveData` in the plugin's `data.json`:
+Settings live in the plugin's `data.json` (`{ "schema": 2, "settings": { … } }`).
+Annotations live in `<plugin>/highlights/`:
+
+- **`index.json`** — the manifest: `{ "schema": 1, "files": { "<fileId>": { "path",
+  "count", "updatedAt" } } }`, where `fileId` is a stable hash of the note's path.
+- **`<fileId>.json`** — one note's shard:
 
 ```jsonc
 {
   "schema": 1,
-  "settings": { /* PluginSettings */ },
-  "highlights": {
-    "Folder/Note.md": [
-      {
-        "id": "…",
-        "groupId": "…",
-        "type": "highlight",        // or "underline"
-        "colorId": "c-yellow",
-        "color": "#ffe14d",
-        "opacity": 0.4,
-        "neon": false,             // neon glow (highlight) / brighter (underline)
-        "underline": { "thickness": 2, "style": "solid", "offset": 3 },
-        "exact": "the selected text",
-        "prefix": "context before",
-        "suffix": "context after",
-        "occurrence": 0,
-        "createdAt": 1700000000000
-      }
-    ]
-  }
+  "path": "Folder/Note.md",
+  "annotations": [
+    {
+      "id": "…",
+      "groupId": "…",
+      "type": "highlight",        // or "underline"
+      "colorId": "c-yellow",
+      "color": "#ffe14d",
+      "opacity": 0.4,
+      "neon": false,             // neon glow (highlight) / brighter (underline)
+      "underline": { "thickness": 2, "style": "solid", "offset": 3 },
+      "exact": "the selected text",
+      "prefix": "context before",
+      "suffix": "context after",
+      "occurrence": 0,
+      "createdAt": 1700000000000
+    }
+  ]
 }
 ```
+
+Upgrading from the older single-blob format is automatic on first run: each
+note's annotations are written to a shard and the original blob is preserved as
+`highlights/legacy-backup-<timestamp>.json`. An exported backup (Settings →
+Export) still uses the original combined `{ schema, settings, highlights }`
+shape, so old and new backups import the same way.
 
 ---
 
