@@ -99,6 +99,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   async onload(): Promise<void> {
     const loaded = await this.loadData();
     this.store = new HighlightStore(loaded ?? null, (data) => this.saveData(data));
+    await this.store.init(this.manifest.id);
     this.settings = this.store.settings;
 
     this.toolbarPlacement = this.loadToolbarPlacement();

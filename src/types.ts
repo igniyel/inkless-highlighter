@@ -166,3 +166,51 @@ export interface PersistedData {
   settings: PluginSettings;
   highlights: FileHighlights;
 }
+
+/** SimHash fingerprints used by the production matching pipeline. */
+export interface AnnotationFingerprints {
+  exact: string;
+  prefix: string;
+  suffix: string;
+  block: string;
+}
+
+/** CRDT value metadata for per-field conflict resolution. */
+export interface FieldVersion<T = unknown> {
+  value: T;
+  timestamp: number;
+  deviceId: string;
+}
+
+/** IndexedDB-backed annotation record with durability/sync metadata. */
+export interface StoredAnnotation extends HighlightRecord {
+  filePath: string;
+  fileId: string;
+  contentHash: string;
+  simhash: AnnotationFingerprints;
+  vectorClock: Record<string, number>;
+  fieldVersions: Record<string, FieldVersion>;
+  updatedAt: number;
+  deletedAt?: number;
+  confidence?: number;
+}
+
+export interface Operation {
+  type: "add" | "remove" | "update";
+  records?: StoredAnnotation[];
+  patch?: Partial<HighlightRecord>;
+  groupId?: string;
+}
+
+/** Persistent undo/redo entry stored for crash-safe history replay. */
+export interface HistoryRecord {
+  filePath: string;
+  sequence: number;
+  timestamp: number;
+  type: "undoable" | "system" | "sync";
+  description: string;
+  inverseOps: Operation[];
+  forwardOps: Operation[];
+  preState: string;
+  postState: string;
+}

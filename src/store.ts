@@ -1,17 +1,19 @@
 /**
  * Persistence for settings and per-file annotations.
  *
- * Everything is written to the plugin's own data.json (via Plugin.saveData),
- * so it travels with the vault and is carried by Obsidian Sync / Git. Saves are
- * debounced to avoid thrashing during rapid annotating.
+ * Production persistence uses IndexedDB object stores plus an append-only WAL.
+ * Obsidian data.json is retained only for settings and first-run migration from
+ * legacy versions that stored every annotation in one JSON blob.
  */
 
 import { debounce, type Debouncer } from "obsidian";
+import { enrichRecord, IndexManager, makeHistory, PersistenceLayer } from "./production";
 import { SCHEMA_VERSION, defaultSettings } from "./constants";
 import type {
   FileHighlights,
   HighlightRecord,
   PersistedData,
+  StoredAnnotation,
   PluginSettings,
 } from "./types";
 
@@ -21,13 +23,53 @@ export class HighlightStore {
   settings: PluginSettings;
   private highlights: FileHighlights;
   private readonly save: SaveFn;
+  private persistence: PersistenceLayer | null = null;
+  private readonly index = new IndexManager();
+  private readonly deviceId = this.getDeviceId();
+  private historySequence = 0;
   private readonly flush: Debouncer<[], void>;
 
   constructor(loaded: Partial<PersistedData> | null, save: SaveFn) {
     this.save = save;
     this.settings = this.mergeSettings(loaded?.settings);
     this.highlights = this.sanitise(loaded?.highlights);
+    for (const [path, records] of Object.entries(this.highlights)) {
+      this.index.setFile(path, records.map((r) => enrichRecord(r, path, this.deviceId)));
+    }
     this.flush = debounce(() => void this.persistNow(), 500, true);
+  }
+
+  async init(pluginId: string): Promise<void> {
+    this.persistence = new PersistenceLayer(pluginId, (data) => this.save({ schema: SCHEMA_VERSION, settings: this.settings, highlights: data.highlights ?? {} } as PersistedData));
+    await this.persistence.open();
+    await this.persistence.putSettings(this.settings);
+    const existing = await this.persistence.getAllAnnotations();
+    if (existing.length > 0) {
+      this.highlights = {};
+      for (const rec of existing.filter((r) => !r.deletedAt)) {
+        const list = this.highlights[rec.filePath] ?? (this.highlights[rec.filePath] = []);
+        list.push(rec);
+      }
+      for (const [path, records] of Object.entries(this.highlights)) this.index.setFile(path, records as StoredAnnotation[]);
+      return;
+    }
+    const batches = Object.entries(this.highlights).map(([path, records]) =>
+      records.map((r) => enrichRecord(r, path, this.deviceId)),
+    );
+    for (const batch of batches) await this.persistence.putAnnotations(batch);
+  }
+
+  private getDeviceId(): string {
+    try {
+      const key = "rhl-device-id";
+      const existing = window.localStorage.getItem(key);
+      if (existing) return existing;
+      const id = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2);
+      window.localStorage.setItem(key, id);
+      return id;
+    } catch {
+      return "device-local";
+    }
   }
 
   /* ----- settings ----- */
@@ -88,7 +130,12 @@ export class HighlightStore {
   add(path: string, records: HighlightRecord[]): void {
     if (records.length === 0) return;
     const list = this.highlights[path] ?? (this.highlights[path] = []);
-    list.push(...records);
+    const stored = records.map((r) => enrichRecord(r, path, this.deviceId));
+    list.push(...stored);
+    this.index.setFile(path, (this.highlights[path] as StoredAnnotation[]));
+    void this.persistence?.appendWal({ type: "add", path, records: stored });
+    void this.persistence?.putAnnotations(stored);
+    void this.persistence?.addHistory(makeHistory(path, ++this.historySequence, `Added ${records.length} annotation(s)`, [{ type: "remove", records: stored }], [{ type: "add", records: stored }]));
     this.flush();
   }
 
@@ -100,7 +147,12 @@ export class HighlightStore {
     const kept = list.filter((r) => r.groupId !== groupId);
     if (kept.length) this.highlights[path] = kept;
     else delete this.highlights[path];
-    if (removed.length) this.flush();
+    if (removed.length) {
+      this.index.setFile(path, kept.map((r) => enrichRecord(r, path, this.deviceId)));
+      void this.persistence?.appendWal({ type: "removeGroup", path, groupId });
+      void this.persistence?.deleteGroup(path, groupId);
+      this.flush();
+    }
     return removed;
   }
 
@@ -115,7 +167,13 @@ export class HighlightStore {
         changed = true;
       }
     }
-    if (changed) this.flush();
+    if (changed) {
+      const stored = list.map((r) => enrichRecord(r, path, this.deviceId));
+      this.index.setFile(path, stored);
+      void this.persistence?.appendWal({ type: "updateGroup", path, groupId, patch });
+      void this.persistence?.putAnnotations(stored.filter((r) => r.groupId === groupId));
+      this.flush();
+    }
   }
 
   findById(path: string, id: string): HighlightRecord | undefined {
@@ -130,12 +188,20 @@ export class HighlightStore {
     delete this.highlights[oldPath];
     const existing = this.highlights[newPath] ?? [];
     this.highlights[newPath] = existing.concat(list);
+    this.index.deleteFile(oldPath);
+    this.index.setFile(newPath, this.highlights[newPath].map((r) => enrichRecord(r, newPath, this.deviceId)));
+    void this.persistence?.appendWal({ type: "rename", oldPath, newPath });
+    void this.persistence?.deleteFile(oldPath);
+    void this.persistence?.putAnnotations(this.highlights[newPath].map((r) => enrichRecord(r, newPath, this.deviceId)));
     this.flush();
   }
 
   deleteFile(path: string): void {
     if (this.highlights[path]) {
       delete this.highlights[path];
+      this.index.deleteFile(path);
+      void this.persistence?.appendWal({ type: "deleteFile", path });
+      void this.persistence?.deleteFile(path);
       this.flush();
     }
   }
@@ -143,12 +209,16 @@ export class HighlightStore {
   /** Replace all settings wholesale (used by the reset action). */
   setSettings(next: PluginSettings): void {
     this.settings = next;
+    void this.persistence?.appendWal({ type: "settings", settings: next });
+    void this.persistence?.putSettings(next);
     this.flush();
   }
 
   /** Remove every stored annotation (settings are untouched). */
   clearAll(): void {
     this.highlights = {};
+    void this.persistence?.appendWal({ type: "clearAll" });
+    void this.persistence?.clearAnnotations();
     this.flush();
   }
 
@@ -188,7 +258,8 @@ export class HighlightStore {
 
   /** Persist immediately (e.g. on unload or after a settings change). */
   async persistNow(): Promise<void> {
-    await this.save(this.exportAll());
+    await this.persistence?.putSettings(this.settings);
+    await this.save({ schema: SCHEMA_VERSION, settings: this.settings, highlights: {} });
   }
 
   /** Schedule a debounced settings+data save. */
