@@ -70,29 +70,40 @@ This is the exact flow the plugin implements.
    underline button, an eraser, a "stop" button, and a settings gear. The
    eraser and gear can be hidden in settings.
 
-2. **Pick a tool.** Each tool button responds to two clicks:
+2. **Pick a tool.**
+
+   *On a computer*, each tool button responds to two clicks:
    - **Left-click** opens that tool's **palette popover** — where you pick a
      colour and set everything (opacity for the highlighter; thickness and line
-     style for the underline) — and arms the tool at the same time.
+     style for the underline; neon glow for either) — and arms the tool at the
+     same time.
    - **Right-click** *only selects* the tool (arms it) without opening the
      popover. Right-click an already-selected tool to deselect it.
 
    You can swap these two roles in settings ("Swap left/right click on tool
-   buttons") if you prefer right-click for the palette. The button shows a
-   coloured bar indicating the current colour. While a tool is armed, the
-   Reading view keeps a text cursor so you can still select normally.
+   buttons") if you prefer right-click for the palette.
+
+   *On a phone or iPad*, the same two intents map to touch:
+   - **Tap** a tool to select it (tap again to deselect), then drag to annotate.
+   - **Long-press** a tool to open its colours and options.
+
+   The button shows a coloured bar indicating the current colour. While a tool
+   is armed, the Reading view keeps a text cursor so you can still select
+   normally.
 
 3. **Drag across some text.** When you release the mouse (or lift your finger),
    the selected text is wrapped and styled immediately, and the annotation is
    saved. If "sticky" is on (the default) the tool stays armed for the next
    selection; if not, it disarms after one annotation.
 
-4. **Adjust parameters any time.** Left-click the *already-armed* tool button
-   again to reopen its palette popover (this does **not** disarm it). In the
-   popover:
+4. **Adjust parameters any time.** Re-open a tool's palette popover whenever it
+   is already armed — left-click it (computer) or long-press it (touch); this
+   does **not** disarm it. In the popover:
    - **Highlighter:** choose a colour and set **opacity**.
    - **Underline:** choose a colour and set **thickness** and **line style**
      (solid / dashed / dotted / wavy).
+   - **Both:** toggle a **neon glow**, and add a new named colour from the
+     dashed **“+” tile** at the end of the palette.
    A live preview shows the result.
 
 5. **Manage an existing annotation.** With no tool armed, click any highlight or
@@ -105,9 +116,9 @@ This is the exact flow the plugin implements.
 7. **Move the toolbar.** Drag the grip handle to reposition it; the position is
    remembered. "Reset toolbar position" in settings snaps it back to its corner.
 
-Left-click on a tool icon is, as requested, the way you reach every parameter;
-right-click is the quick "just select it" gesture. The two can be swapped in
-settings.
+On a computer, a click on a tool icon reaches every parameter and a right-click
+is the quick "just select it" gesture (the two can be swapped in settings). On
+touch, a long-press reaches the parameters and a tap is the quick select.
 
 ---
 
@@ -180,20 +191,23 @@ together.
 
 | Tool | Armed by | Effect |
 | --- | --- | --- |
-| Highlighter | left-click opens its palette and arms it; right-click only selects it | drag-select paints a background highlight |
-| Underline | left-click opens its palette and arms it; right-click only selects it | drag-select draws an underline |
+| Highlighter | click (or long-press on touch) opens its palette and arms it; right-click or tap only selects it | drag-select paints a background highlight |
+| Underline | click (or long-press on touch) opens its palette and arms it; right-click or tap only selects it | drag-select draws an underline |
 | Eraser | clicking the eraser button | clicking an annotation removes it |
 | Stop | clicking the cursor button | disarms all tools |
 
 (Left/right roles for the highlighter and underline buttons can be swapped in
-settings.)
+settings; on touch, tap selects and long-press opens the options.)
 
 ### Palette popover
 
-- A grid of palette swatches; the current one is ringed.
+- A six-column grid of palette swatches; the current one is ringed. The grid
+  grows downward as you add colours, and ends with a dashed **“+” tile** that
+  adds a new, named colour on the spot.
 - **Highlighter:** opacity slider (10–100%).
 - **Underline:** thickness slider (1–5 px) and a style dropdown
   (solid / dashed / dotted / wavy).
+- **Neon glow** toggle for either tool.
 - A live preview of the current settings.
 
 ### Annotation popover (click an annotation with no tool armed)
@@ -236,6 +250,7 @@ settings.)
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Default highlight opacity | 40% | Starting strength for new highlights. |
+| Neon glow | Off | Wrap new annotations in a luminous halo of their colour. |
 | Default underline thickness | 2 px | Line thickness for new underlines. |
 | Default underline style | Solid | Line style for new underlines. |
 | Default underline offset | 3 px | Gap between baseline and underline. |
@@ -255,9 +270,11 @@ settings.)
 ### Colour palette
 
 A full editor: change a colour with the colour picker, rename it, reorder with
-the up/down buttons, delete it, **add** new colours, or **reset** to the eight
-defaults. Editing a colour affects *future* annotations; existing annotations
-keep the colour they were created with (their appearance is snapshotted).
+the up/down buttons, delete it, **add** new colours, or **reset** to the five
+defaults. The five defaults are tuned to read well both as a glowing neon
+highlight and as a crisp underline. Editing a colour affects *future*
+annotations; existing annotations keep the colour they were created with (their
+appearance is snapshotted).
 
 ### Data
 
@@ -336,8 +353,10 @@ keep the colour they were created with (their appearance is snapshotted).
 ## Compatibility
 
 - **Minimum Obsidian:** 1.4.0.
-- **Desktop and mobile:** both. Touch drag-to-select works in Reading view; the
-  toolbar targets are enlarged on narrow screens.
+- **Desktop and mobile:** both. Touch drag-to-select works in Reading view; on
+  phones and iPad the toolbar uses larger targets, a **tap** selects a tool and
+  a **long-press** opens its options. The toolbar is kept on-screen when the
+  device rotates or the window resizes.
 - **Themes:** the UI is built entirely from Obsidian theme variables, so it
   adapts to light, dark, and community themes automatically.
 

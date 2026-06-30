@@ -19,16 +19,17 @@ export const READING_VIEW_SELECTOR = ".markdown-reading-view, .markdown-preview-
 /** Elements whose text should never be wrapped (would break formatting). */
 export const SKIP_TAGS = new Set(["PRE", "CODE", "KBD", "SAMP"]);
 
-/** Default colour palette. Hex values are tuned to read well over body text. */
+/**
+ * Default colour palette — five vivid hues, each chosen to do double duty: as a
+ * luminous neon highlight (with the glow effect on) and as a crisp, legible
+ * underline. They stay distinct from one another on both light and dark themes.
+ */
 export const DEFAULT_PALETTE: PaletteColor[] = [
-  { id: "c-yellow", name: "Yellow", color: "#ffd54f" },
-  { id: "c-green", name: "Green", color: "#81c784" },
-  { id: "c-blue", name: "Blue", color: "#64b5f6" },
-  { id: "c-pink", name: "Pink", color: "#f06292" },
-  { id: "c-orange", name: "Orange", color: "#ffb74d" },
-  { id: "c-purple", name: "Purple", color: "#ba68c8" },
-  { id: "c-red", name: "Red", color: "#e57373" },
-  { id: "c-teal", name: "Teal", color: "#4db6ac" },
+  { id: "c-yellow", name: "Citrus", color: "#ffe14d" },
+  { id: "c-green", name: "Lime", color: "#46f08c" },
+  { id: "c-cyan", name: "Aqua", color: "#33e1ff" },
+  { id: "c-pink", name: "Magenta", color: "#ff5fb0" },
+  { id: "c-orange", name: "Coral", color: "#ff8a3d" },
 ];
 
 /** Factory for default settings (so each load gets a fresh object). */
@@ -37,8 +38,9 @@ export function defaultSettings(): PluginSettings {
     palette: DEFAULT_PALETTE.map((c) => ({ ...c })),
     defaultTool: "highlight",
     lastHighlightColorId: "c-yellow",
-    lastUnderlineColorId: "c-red",
+    lastUnderlineColorId: "c-pink",
     highlightOpacity: 0.4,
+    neonEffect: false,
     underline: { thickness: 2, style: "solid", offset: 3 },
 
     stickyTool: true,

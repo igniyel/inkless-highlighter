@@ -281,13 +281,20 @@ export function styleWrapper(
   el.style.removeProperty("text-decoration-thickness");
   el.style.removeProperty("text-underline-offset");
   el.style.removeProperty("box-shadow");
+  el.style.removeProperty("filter");
 
   if (rec.type === "highlight") {
     el.style.backgroundColor = rgba(rec.color, rec.opacity);
     el.style.color = "inherit";
+    const shadows: string[] = [];
     if (settings.highContrast) {
-      el.style.boxShadow = `inset 0 0 0 1px ${rgba(rec.color, Math.min(1, rec.opacity + 0.4))}`;
+      shadows.push(`inset 0 0 0 1px ${rgba(rec.color, Math.min(1, rec.opacity + 0.4))}`);
     }
+    if (rec.neon) {
+      // A soft outer halo in the annotation's own colour for the neon look.
+      shadows.push(`0 0 4px ${rgba(rec.color, 0.95)}`, `0 0 10px ${rgba(rec.color, 0.55)}`);
+    }
+    if (shadows.length) el.style.boxShadow = shadows.join(", ");
   } else {
     el.style.backgroundColor = "transparent";
     el.style.textDecorationLine = "underline";
@@ -295,6 +302,10 @@ export function styleWrapper(
     el.style.textDecorationStyle = rec.underline?.style ?? "solid";
     el.style.textDecorationThickness = `${rec.underline?.thickness ?? 2}px`;
     el.style.textUnderlineOffset = `${rec.underline?.offset ?? 3}px`;
+    if (rec.neon) {
+      // drop-shadow follows the rendered underline, giving it a neon halo.
+      el.style.filter = `drop-shadow(0 0 2px ${rgba(rec.color, 0.85)})`;
+    }
   }
   el.setAttribute("aria-label", rec.note ? rec.note : `${rec.type} annotation`);
 }
