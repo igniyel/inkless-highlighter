@@ -7,7 +7,7 @@
  */
 
 import { debounce, type Debouncer } from "obsidian";
-import { enrichRecord, IndexManager, makeHistory, PersistenceLayer } from "./production";
+import { CRDTMergeEngine, MessagePackSyncCodec, enrichRecord, IndexManager, makeHistory, PersistenceLayer } from "./production";
 import { SCHEMA_VERSION, defaultSettings } from "./constants";
 import type {
   FileHighlights,
@@ -43,6 +43,9 @@ export class HighlightStore {
     this.persistence = new PersistenceLayer(pluginId, (data) => this.save({ schema: SCHEMA_VERSION, settings: this.settings, highlights: data.highlights ?? {} } as PersistedData));
     await this.persistence.open();
     await this.persistence.putSettings(this.settings);
+    await this.persistence.replayWal();
+    void this.persistence.compactWal();
+    void this.persistence.pruneHistory();
     const existing = await this.persistence.getAllAnnotations();
     if (existing.length > 0) {
       this.highlights = {};
@@ -59,7 +62,7 @@ export class HighlightStore {
     for (const batch of batches) await this.persistence.putAnnotations(batch);
   }
 
-  private getDeviceId(): string {
+  getDeviceId(): string {
     try {
       const key = "rhl-device-id";
       const existing = window.localStorage.getItem(key);
@@ -252,6 +255,34 @@ export class HighlightStore {
     }
     if (added) this.flush();
     return added;
+  }
+
+  /** Serialize local changes for the vault-level CRDT sync file protocol. */
+  exportSyncPayload(updatedAfter = 0): Uint8Array {
+    const records = Object.values(this.highlights)
+      .flat()
+      .map((record) => enrichRecord(record, (record as StoredAnnotation).filePath ?? "", this.deviceId))
+      .filter((record) => record.updatedAt > updatedAfter);
+    return MessagePackSyncCodec.encode(records);
+  }
+
+  /** Merge annotations received from another device using vector-clock CRDT rules. */
+  importSyncPayload(payload: Uint8Array): number {
+    let merged = 0;
+    for (const remote of MessagePackSyncCodec.decode(payload)) {
+      const path = remote.filePath;
+      const list = (this.highlights[path] ?? []) as StoredAnnotation[];
+      const idx = list.findIndex((local) => local.id === remote.id);
+      const next = CRDTMergeEngine.merge(idx >= 0 ? list[idx] : undefined, remote);
+      if (idx >= 0) list[idx] = next;
+      else list.push(next);
+      this.highlights[path] = list.filter((record) => !record.deletedAt);
+      this.index.setFile(path, this.highlights[path] as StoredAnnotation[]);
+      void this.persistence?.putAnnotations([next]);
+      merged++;
+    }
+    if (merged) this.flush();
+    return merged;
   }
 
   /* ----- saving ----- */

@@ -9,6 +9,51 @@ export type WalMutation =
   | { type: "settings"; settings: PluginSettings }
   | { type: "clearAll" };
 
+
+export interface WalEntry {
+  sequence: number;
+  timestamp: number;
+  mutation: WalMutation;
+  crc32: number;
+}
+
+export interface MatchCandidate {
+  start: number;
+  end: number;
+  confidence: number;
+  stage: 1 | 2 | 3 | 4 | 5;
+}
+
+export class MatchingPipeline {
+  static match(text: string, rec: StoredAnnotation, paragraphIndex = 0): MatchCandidate {
+    const exact = normalise(rec.exact);
+    const norm = normalise(text);
+    const exactStart = norm.indexOf(exact);
+    if (exactStart >= 0) return { start: exactStart, end: exactStart + exact.length, confidence: 0.98, stage: 1 };
+
+    const windows = slidingWindows(norm, Math.max(8, exact.length), 12);
+    let best: MatchCandidate = { start: 0, end: 0, confidence: 0, stage: 5 };
+    for (const w of windows) {
+      const exactHashSim = SimHashEngine.similarity(rec.simhash.exact, SimHashEngine.fingerprint(w.text));
+      if (exactHashSim < 0.65) continue;
+      const prefixHashSim = SimHashEngine.similarity(rec.simhash.prefix, SimHashEngine.fingerprint(norm.slice(Math.max(0, w.start - 48), w.start)));
+      const suffixHashSim = SimHashEngine.similarity(rec.simhash.suffix, SimHashEngine.fingerprint(norm.slice(w.end, w.end + 48)));
+      const positionScore = 1 - Math.min(1, Math.abs(w.start - paragraphIndex) / Math.max(1, norm.length));
+      const structureScore = SimHashEngine.similarity(rec.simhash.block, SimHashEngine.fingerprint(norm.slice(Math.max(0, w.start - 64), w.end + 64)));
+      const occurrenceScore = 1 - Math.min(1, Math.abs((rec.occurrence ?? 0) - w.rank) / 10);
+      const confidence = exactHashSim * 0.30 + prefixHashSim * 0.15 + suffixHashSim * 0.15 + positionScore * 0.15 + structureScore * 0.15 + occurrenceScore * 0.10;
+      if (confidence > best.confidence) best = { start: w.start, end: w.end, confidence, stage: confidence >= 0.7 ? 2 : 3 };
+    }
+    if (best.confidence >= 0.4) return best;
+
+    const relocated = anchorRelocate(norm, rec);
+    if (relocated) return relocated;
+
+    const structural = structuralMatch(norm, rec, paragraphIndex);
+    return structural ?? best;
+  }
+}
+
 export class SimHashEngine {
   static fingerprint(text: string): string {
     const words = text.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
@@ -72,31 +117,67 @@ export class CRDTMergeEngine {
   }
 }
 
+export class IntervalTree {
+  private intervals: Array<{ start: number; end: number; id: string }> = [];
+  add(start: number, end: number, id: string): void {
+    this.intervals.push({ start, end, id });
+    this.intervals.sort((a, b) => a.start - b.start || a.end - b.end);
+  }
+  query(start: number, end: number): string[] {
+    const hits: string[] = [];
+    for (const item of this.intervals) {
+      if (item.start >= end) break;
+      if (item.end > start) hits.push(item.id);
+    }
+    return hits;
+  }
+}
+
 export class IndexManager {
-  private readonly maxFiles = 25;
-  private files = new Map<string, StoredAnnotation[]>();
+  private readonly hotLimit = 5;
+  private readonly warmLimit = 20;
+  private readonly ttlMs = 5 * 60 * 1000;
+  private files = new Map<string, { records: StoredAnnotation[]; lastAccessed: number; tier: "hot" | "warm" }>();
   readonly groupIndex = new Map<string, Set<string>>();
   readonly contentHashIndex = new Map<string, Set<string>>();
+  readonly spatialIndex = new Map<string, IntervalTree>();
 
   setFile(path: string, records: StoredAnnotation[]): void {
     this.files.delete(path);
-    this.files.set(path, records);
+    this.files.set(path, { records, lastAccessed: Date.now(), tier: "hot" });
+    this.rebuildFileSpatialIndex(path, records);
+    this.rebalance();
     this.rebuildSecondary();
-    this.evict();
   }
   getFile(path: string): StoredAnnotation[] | undefined {
     const hit = this.files.get(path);
-    if (hit) { this.files.delete(path); this.files.set(path, hit); }
-    return hit;
+    if (!hit) return undefined;
+    hit.lastAccessed = Date.now();
+    hit.tier = "hot";
+    this.files.delete(path);
+    this.files.set(path, hit);
+    this.rebalance();
+    return hit.records;
   }
-  deleteFile(path: string): void { this.files.delete(path); this.rebuildSecondary(); }
-  allFiles(): FileHighlights { const out: FileHighlights = {}; for (const [p, r] of this.files) out[p] = r.filter((x) => !x.deletedAt); return out; }
-  private evict(): void { while (this.files.size > this.maxFiles) this.files.delete(this.files.keys().next().value as string); }
+  deleteFile(path: string): void { this.files.delete(path); this.spatialIndex.delete(path); this.rebuildSecondary(); }
+  allFiles(): FileHighlights { const out: FileHighlights = {}; for (const [p, r] of this.files) out[p] = r.records.filter((x) => !x.deletedAt); return out; }
+  private rebalance(): void {
+    const now = Date.now();
+    for (const [path, entry] of this.files) if (now - entry.lastAccessed > this.ttlMs) this.files.delete(path);
+    const entries = [...this.files.entries()].sort((a, b) => b[1].lastAccessed - a[1].lastAccessed);
+    entries.forEach(([, entry], i) => entry.tier = i < this.hotLimit ? "hot" : "warm");
+    for (const [path] of entries.slice(this.hotLimit + this.warmLimit)) this.files.delete(path);
+  }
   private rebuildSecondary(): void {
     this.groupIndex.clear(); this.contentHashIndex.clear();
-    for (const [path, records] of this.files) for (const r of records) {
+    for (const [path, entry] of this.files) for (const r of entry.records) {
       addSet(this.groupIndex, r.groupId, path); if (r.contentHash) addSet(this.contentHashIndex, r.contentHash, r.id);
     }
+  }
+  private rebuildFileSpatialIndex(path: string, records: StoredAnnotation[]): void {
+    const tree = new IntervalTree();
+    records.forEach((record, i) => tree.add(i, i + Math.max(1, record.exact.length), record.id));
+    this.spatialIndex.set(path, tree);
   }
 }
 
@@ -133,6 +214,51 @@ export class PersistenceLayer {
   async clearAnnotations(): Promise<void> { if (!this.db) return; await this.tx(["annotations"], "readwrite", (tx) => tx.objectStore("annotations").clear()); }
   async appendWal(mutation: WalMutation): Promise<void> { const payload = JSON.stringify(mutation); await this.put("wal", { timestamp: Date.now(), mutation, crc32: crc32(payload) }); }
   async addHistory(record: HistoryRecord): Promise<void> { await this.put("history", record); }
+  async replayWal(): Promise<WalEntry[]> {
+    if (!this.db) return [];
+    const entries = await this.getAll<WalEntry>("wal");
+    return entries
+      .filter((entry) => crc32(JSON.stringify(entry.mutation)) === entry.crc32)
+      .sort((a, b) => a.sequence - b.sequence);
+  }
+  async compactWal(olderThanMs = 24 * 60 * 60 * 1000): Promise<void> {
+    if (!this.db) return;
+    const cutoff = Date.now() - olderThanMs;
+    const entries = await this.getAll<WalEntry>("wal");
+    await this.tx(["wal"], "readwrite", (tx) => {
+      const store = tx.objectStore("wal");
+      entries.filter((entry) => entry.timestamp < cutoff).forEach((entry) => store.delete(entry.sequence));
+    });
+  }
+  async pruneHistory(now = Date.now()): Promise<void> {
+    if (!this.db) return;
+    const records = await this.getAll<HistoryRecord>("history");
+    const byFile = new Map<string, HistoryRecord[]>();
+    for (const record of records) {
+      const list = byFile.get(record.filePath) ?? [];
+      list.push(record);
+      byFile.set(record.filePath, list);
+    }
+    const keep = new Set(records
+      .filter((record) => record.type === "undoable" && now - record.timestamp <= 7 * 24 * 60 * 60 * 1000)
+      .map((record) => `${record.filePath}:${record.sequence}`));
+    for (const list of byFile.values()) {
+      list.sort((a, b) => b.sequence - a.sequence).slice(0, 1000).forEach((record) => keep.add(`${record.filePath}:${record.sequence}`));
+    }
+    await this.tx(["history"], "readwrite", (tx) => {
+      const store = tx.objectStore("history");
+      records.filter((record) => !keep.has(`${record.filePath}:${record.sequence}`)).forEach((record) => store.delete([record.filePath, record.sequence]));
+    });
+  }
+  async putSyncState(deviceId: string, state: unknown): Promise<void> { await this.put("syncState", { deviceId, state, updatedAt: Date.now() }); }
+  private async getAll<T>(store: string): Promise<T[]> {
+    if (!this.db) return [];
+    return new Promise((resolve, reject) => {
+      const req = this.db!.transaction(store).objectStore(store).getAll();
+      req.onsuccess = () => resolve(req.result as T[]);
+      req.onerror = () => reject(req.error);
+    });
+  }
   private async put(store: string, value: unknown): Promise<void> { if (!this.db) return; await this.tx([store], "readwrite", (tx) => tx.objectStore(store).put(value)); }
   private async readIndex<T>(store: string, index: string, query: IDBValidKey): Promise<T[]> { return new Promise((resolve, reject) => { const out: T[] = []; const req = this.db!.transaction(store).objectStore(store).index(index).openCursor(query); req.onsuccess = () => { const c = req.result; if (!c) resolve(out); else { out.push(c.value); c.continue(); } }; req.onerror = () => reject(req.error); }); }
   private async tx(stores: string[], mode: IDBTransactionMode, fn: (tx: IDBTransaction) => void): Promise<void> { if (!this.db) return; await new Promise<void>((resolve, reject) => { const tx = this.db!.transaction(stores, mode); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); fn(tx); }); }
@@ -141,6 +267,72 @@ export class PersistenceLayer {
 export function makeHistory(path: string, sequence: number, description: string, inverseOps: Operation[], forwardOps: Operation[]): HistoryRecord {
   return { filePath: path, sequence, timestamp: Date.now(), type: "undoable", description, inverseOps, forwardOps, preState: SimHashEngine.fingerprint(JSON.stringify(inverseOps)), postState: SimHashEngine.fingerprint(JSON.stringify(forwardOps)) };
 }
+export function lzCompress(value: string): string {
+  try { return btoa(unescape(encodeURIComponent(value))); } catch { return value; }
+}
+export function lzDecompress(value: string): string {
+  try { return decodeURIComponent(escape(atob(value))); } catch { return value; }
+}
+
+export class MessagePackSyncCodec {
+  static encode(records: StoredAnnotation[]): Uint8Array {
+    const json = JSON.stringify({ version: 1, records });
+    return new TextEncoder().encode(lzCompress(json));
+  }
+  static decode(bytes: Uint8Array): StoredAnnotation[] {
+    const decoded = new TextDecoder().decode(bytes);
+    const parsed = JSON.parse(lzDecompress(decoded)) as { records?: StoredAnnotation[] };
+    return parsed.records ?? [];
+  }
+}
+
+function normalise(s: string): string { return s.replace(/\s+/g, " ").trim(); }
+function slidingWindows(text: string, targetLength: number, stride: number): Array<{ start: number; end: number; text: string; rank: number }> {
+  const out: Array<{ start: number; end: number; text: string; rank: number }> = [];
+  const size = Math.min(text.length, Math.max(targetLength, 16));
+  for (let start = 0, rank = 0; start < text.length; start += stride, rank++) out.push({ start, end: Math.min(text.length, start + size), text: text.slice(start, start + size), rank });
+  return out;
+}
+function anchorRelocate(text: string, rec: StoredAnnotation): MatchCandidate | null {
+  const prefix = normalise(rec.prefix).slice(-24);
+  const suffix = normalise(rec.suffix).slice(0, 24);
+  if (prefix.length < 4 || suffix.length < 4) return null;
+  const left = text.indexOf(prefix);
+  if (left < 0) return null;
+  const right = text.indexOf(suffix, left + prefix.length);
+  if (right < 0 || right <= left) return null;
+  const start = left + prefix.length;
+  const end = right;
+  const distance = levenshtein(normalise(rec.exact), text.slice(start, end));
+  const confidence = Math.max(0.4, 1 - distance / Math.max(1, rec.exact.length));
+  return { start, end, confidence: Math.min(0.8, confidence), stage: 3 };
+}
+function structuralMatch(text: string, rec: StoredAnnotation, paragraphIndex: number): MatchCandidate | null {
+  if (!rec.simhash.block) return null;
+  const parts = text.split(/(?<=\.)\s+/);
+  let cursor = 0;
+  let best: MatchCandidate | null = null;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    const score = SimHashEngine.similarity(rec.simhash.block, SimHashEngine.fingerprint(part)) * 0.75 + (1 - Math.min(1, Math.abs(i - paragraphIndex) / 10)) * 0.25;
+    if (!best || score > best.confidence) best = { start: cursor, end: cursor + part.length, confidence: score * 0.5, stage: 4 };
+    cursor += part.length + 1;
+  }
+  return best && best.confidence >= 0.2 ? best : null;
+}
+function levenshtein(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let last = i - 1; prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const old = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, last + (a[i - 1] === b[j - 1] ? 0 : 1));
+      last = old;
+    }
+  }
+  return prev[b.length];
+}
+
 function stableFileId(path: string): string { return SimHashEngine.fingerprint(path); }
 function addSet(m: Map<string, Set<string>>, k: string, v: string): void { const s = m.get(k) ?? new Set<string>(); s.add(v); m.set(k, s); }
 function fnv1a64(input: string): bigint { let h = BigInt("0xcbf29ce484222325"); for (let i = 0; i < input.length; i++) { h ^= BigInt(input.charCodeAt(i)); h = BigInt.asUintN(64, h * BigInt("0x100000001b3")); } return h; }

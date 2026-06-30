@@ -81,6 +81,8 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   private activeTool: ActiveTool = null;
   /** Timestamp of the last successful capture, to swallow the trailing click. */
   private lastCaptureAt = 0;
+  private lastSyncTimestamp = 0;
+  private syncTimer: number | null = null;
 
   /**
    * In-memory undo/redo history, one stack pair per file. Not persisted: it is
@@ -135,6 +137,14 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
       this.app.workspace.on("layout-change", () => this.updateToolbarVisibility()),
     );
 
+    // Import CRDT sync payloads emitted by another device.
+    this.registerEvent(
+      this.app.vault.on("create", (file) => void this.importSyncFile(file)),
+    );
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => void this.importSyncFile(file)),
+    );
+
     // Keep annotations attached to their note across renames / deletes.
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
@@ -157,6 +167,8 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   }
 
   async onunload(): Promise<void> {
+    if (this.syncTimer !== null) window.clearTimeout(this.syncTimer);
+    await this.writeSyncSnapshot();
     dismissPopovers();
     this.setBodyState(null);
     this.toolbar?.destroy();
@@ -272,6 +284,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     const before = this.snapshotGroup(path, groupId);
     const color = this.resolveColor(colorId);
     this.store.updateGroup(path, groupId, { colorId, color });
+    this.scheduleSyncExport();
     const root = this.rootFor(el);
     restyleGroup(root, groupId, { ...rec, colorId, color }, this.settings);
     this.recordHistory(path, groupId, before, this.snapshotGroup(path, groupId));
@@ -291,6 +304,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
       patch.underline = { ...this.settings.underline };
     }
     this.store.updateGroup(path, groupId, patch);
+    this.scheduleSyncExport();
     const root = this.rootFor(el);
     restyleGroup(root, groupId, { ...rec, ...patch }, this.settings);
     this.recordHistory(path, groupId, before, this.snapshotGroup(path, groupId));
@@ -303,7 +317,10 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     if (this.settings.confirmDelete && !confirm("Delete this annotation?")) return;
     const removed = this.store.removeGroup(path, groupId);
     removed.forEach((r) => unwrapById(document, r.id));
-    if (removed.length) this.recordHistory(path, groupId, cloneRecords(removed), []);
+    if (removed.length) {
+      this.recordHistory(path, groupId, cloneRecords(removed), []);
+      this.scheduleSyncExport();
+    }
   }
 
   copyAnnotationText(el: HTMLElement): void {
@@ -515,6 +532,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     }));
 
     this.store.add(path, records);
+    this.scheduleSyncExport();
 
     // Instant feedback: wrap the live DOM now (post-processor will skip dupes).
     parts.forEach((part, i) => applyPartLive(part, records[i], this.settings));
@@ -683,7 +701,10 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     const groupId = latest.groupId;
     const removed = this.store.removeGroup(path, groupId);
     removed.forEach((r) => unwrapById(document, r.id));
-    if (removed.length) this.recordHistory(path, groupId, cloneRecords(removed), []);
+    if (removed.length) {
+      this.recordHistory(path, groupId, cloneRecords(removed), []);
+      this.scheduleSyncExport();
+    }
     new Notice("Removed last annotation.");
   }
 
@@ -722,6 +743,50 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   /* ------------------------------------------------------------------ */
   /* Helpers                                                             */
   /* ------------------------------------------------------------------ */
+
+
+  private scheduleSyncExport(): void {
+    if (this.syncTimer !== null) window.clearTimeout(this.syncTimer);
+    this.syncTimer = window.setTimeout(() => {
+      this.syncTimer = null;
+      void this.writeSyncSnapshot();
+    }, 1000);
+  }
+
+  private async writeSyncSnapshot(): Promise<void> {
+    const payload = this.store.exportSyncPayload(this.lastSyncTimestamp);
+    if (payload.byteLength === 0) return;
+    this.lastSyncTimestamp = Date.now();
+    const dir = `.rhl-sync`;
+    const path = `${dir}/${this.store.getDeviceId()}-${this.lastSyncTimestamp}.rhl-sync`;
+    const adapter = this.app.vault.adapter as unknown as { mkdir?: (path: string) => Promise<void>; writeBinary?: (path: string, data: ArrayBuffer) => Promise<void>; write?: (path: string, data: string) => Promise<void> };
+    try {
+      await adapter.mkdir?.(dir).catch?.(() => undefined);
+      if (adapter.writeBinary) {
+        const copy = new Uint8Array(payload.byteLength);
+        copy.set(payload);
+        await adapter.writeBinary(path, copy.buffer);
+      }
+      else await adapter.write?.(path, bytesToBase64(payload));
+    } catch {
+      // Sync export is opportunistic; WAL/IndexedDB remain authoritative locally.
+    }
+  }
+
+  private async importSyncFile(file: unknown): Promise<void> {
+    if (!(file instanceof TFile) || !file.path.endsWith(".rhl-sync")) return;
+    if (file.path.includes(this.store.getDeviceId())) return;
+    const adapter = this.app.vault.adapter as unknown as { readBinary?: (path: string) => Promise<ArrayBuffer>; read?: (path: string) => Promise<string> };
+    try {
+      const bytes = adapter.readBinary
+        ? new Uint8Array(await adapter.readBinary(file.path))
+        : base64ToBytes(await adapter.read?.(file.path) ?? "");
+      const merged = this.store.importSyncPayload(bytes);
+      if (merged > 0) this.refreshReadingViews();
+    } catch {
+      // Ignore corrupt or partially synced files; WAL CRC/replay protects local data.
+    }
+  }
 
   private updateToolbarVisibility(): void {
     if (!this.toolbar) return;
@@ -791,4 +856,17 @@ function cssEscape(value: string): string {
   const c = (window as unknown as { CSS?: { escape?: (v: string) => string } }).CSS;
   if (typeof c?.escape === "function") return c.escape(value);
   return value.replace(/["\\\]]/g, "\\$&");
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  bytes.forEach((b) => binary += String.fromCharCode(b));
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
 }
