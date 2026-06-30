@@ -263,18 +263,18 @@ settings; on touch, tap selects and long-press opens the options.)
 | Confirm before deleting | Off | Ask before removing an annotation. |
 | Skip code | On | Never annotate inside code blocks / inline code. |
 | Show annotations in Live Preview | On | Also paint (read-only) in the editor's Live Preview. |
-| Context length | 32 | Characters of context stored per side for re-locating. |
+| Context length | 64 | Characters of context stored per side for re-locating. |
 | Follow renames | On | Move annotations with a renamed/moved note. |
-| Delete annotations with note | Off | Remove annotations when the note is deleted. |
+| Delete annotations with note | On | Remove annotations when the note is deleted. |
 
 ### Appearance
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Default highlight opacity | 40% | Starting strength for new highlights. |
+| Default highlight opacity | 50% | Starting strength for new highlights. |
 | Neon glow on highlights | Off | Wrap new highlights in a luminous halo of their colour. |
 | Brighter underlines | Off | Draw new underlines in a more vivid version of their colour (line only). |
-| Default underline thickness | 2 px | Line thickness for new underlines. |
+| Default underline thickness | 3 px | Line thickness for new underlines. |
 | Default underline style | Solid | Line style for new underlines. |
 | Default underline offset | 3 px | Gap between baseline and underline. |
 | High-contrast outline | Off | Adds a subtle border to highlights for low-contrast themes. |
@@ -283,12 +283,12 @@ settings; on touch, tap selects and long-press opens the options.)
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Swap left/right click on tool buttons | Off | Off: left-click opens the palette, right-click selects. On: swap them. |
+| Swap left/right click on tool buttons | On | Off: left-click opens the palette, right-click selects. On: swap them. |
 | Show toolbar in Reading view | On | Hide it entirely if you prefer commands. |
 | Toolbar corner | Bottom right | Where it docks before you drag it (remembered per device). |
 | Reset toolbar position | — | Clears this device's manual drag offset. |
 | Show eraser button | On | Show/hide the eraser. |
-| Show undo/redo buttons | Off | Show undo and redo buttons in the toolbar (the shortcuts work either way). |
+| Show undo/redo buttons | On | Show undo and redo buttons in the toolbar (the shortcuts work either way). |
 | Show settings button | On | Show/hide the gear. |
 
 ### Colour palette
@@ -353,15 +353,28 @@ appearance is snapshotted).
 
 ---
 
-## Performance
+## Performance and storage
 
-- A cheap pre-filter (does the first word of the anchor even appear in this
-  container?) skips most non-matching sections before any expensive work.
-- Text-node collection and normalisation are linear in the rendered text length
-  and run only for notes that actually have annotations.
-- Saves to disk are **debounced** (500 ms) so rapid annotating does not thrash
-  the data file.
-- DOM work wraps existing text nodes in place; no innerHTML rebuilds.
+Annotations are stored as **per-file JSON shards** in the plugin folder, with a
+small `index.json` manifest, rather than one growing `data.json` blob:
+
+- **Incremental writes.** Changing one note rewrites only that note's shard (a
+  few KB), never the whole dataset. Writes are **debounced** (500 ms) and the
+  manifest tracks per-file counts so totals and listings never touch a shard.
+- **Lazy loading + LRU.** A note's annotations load on demand when it is opened
+  or rendered, and idle notes are evicted from memory, so RAM tracks the working
+  set instead of the entire vault. A quick manifest check means unannotated
+  notes load nothing at all.
+- **In-memory indexes.** Each loaded note keeps `byId` and `byGroup` maps, so
+  recolouring, converting and deleting are O(1) instead of array scans.
+- **One-time migration.** An existing `data.json` is migrated into shards on
+  first run (with a `legacy-backup-*.json` kept for safety); settings stay in
+  `data.json`. Shards live in the plugin folder, so annotations still travel
+  with the vault through Obsidian Sync / Git exactly as before.
+
+Matching is also cheap: a pre-filter skips sections whose distinctive anchors do
+not appear, text-node collection is linear in the rendered text, and DOM work
+wraps existing text nodes in place (no innerHTML rebuilds).
 
 ---
 
@@ -370,8 +383,8 @@ appearance is snapshotted).
 - **No HTML injection.** The engine only ever wraps text nodes that are already
   in the document, so note content cannot introduce script or markup through
   this plugin.
-- **No network access.** Nothing is sent anywhere. Annotations live in the
-  plugin's local `data.json`.
+- **No network access.** Nothing is sent anywhere. Annotations live in local
+  JSON shards in the plugin folder.
 - **Your notes are unchanged.** The Markdown on disk is never modified by normal
   use.
 
@@ -430,7 +443,8 @@ organised as:
 | `src/types.ts` | Shared types. |
 | `src/constants.ts` | CSS class names, default palette, default settings. |
 | `src/engine.ts` | Capture, anchoring, matching, and DOM wrapping. |
-| `src/store.ts` | Persistence and per-file annotation storage. |
+| `src/persistence.ts` | Storage adapter contract, shard/manifest types, file-id hashing. |
+| `src/store.ts` | Sharded, indexed, lazily-loaded annotation storage + migration. |
 | `src/ui.ts` | Floating toolbar and popovers. |
 | `src/settings.ts` | Settings tab and palette editor. |
 | `src/main.ts` | Plugin wiring, post-processor, events, commands. |
@@ -490,33 +504,42 @@ organised as:
 
 ## Data format
 
-Stored via Obsidian's `saveData` in the plugin's `data.json`:
+Settings live in the plugin's `data.json` (`{ "schema": 2, "settings": { … } }`).
+Annotations live in `<plugin>/highlights/`:
+
+- **`index.json`** — the manifest: `{ "schema": 1, "files": { "<fileId>": { "path",
+  "count", "updatedAt" } } }`, where `fileId` is a stable hash of the note's path.
+- **`<fileId>.json`** — one note's shard:
 
 ```jsonc
 {
   "schema": 1,
-  "settings": { /* PluginSettings */ },
-  "highlights": {
-    "Folder/Note.md": [
-      {
-        "id": "…",
-        "groupId": "…",
-        "type": "highlight",        // or "underline"
-        "colorId": "c-yellow",
-        "color": "#ffe14d",
-        "opacity": 0.4,
-        "neon": false,             // neon glow (highlight) / brighter (underline)
-        "underline": { "thickness": 2, "style": "solid", "offset": 3 },
-        "exact": "the selected text",
-        "prefix": "context before",
-        "suffix": "context after",
-        "occurrence": 0,
-        "createdAt": 1700000000000
-      }
-    ]
-  }
+  "path": "Folder/Note.md",
+  "annotations": [
+    {
+      "id": "…",
+      "groupId": "…",
+      "type": "highlight",        // or "underline"
+      "colorId": "c-yellow",
+      "color": "#ffe14d",
+      "opacity": 0.4,
+      "neon": false,             // neon glow (highlight) / brighter (underline)
+      "underline": { "thickness": 2, "style": "solid", "offset": 3 },
+      "exact": "the selected text",
+      "prefix": "context before",
+      "suffix": "context after",
+      "occurrence": 0,
+      "createdAt": 1700000000000
+    }
+  ]
 }
 ```
+
+Upgrading from the older single-blob format is automatic on first run: each
+note's annotations are written to a shard and the original blob is preserved as
+`highlights/legacy-backup-<timestamp>.json`. An exported backup (Settings →
+Export) still uses the original combined `{ schema, settings, highlights }`
+shape, so old and new backups import the same way.
 
 ---
 

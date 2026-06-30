@@ -18,6 +18,7 @@ import {
   Plugin,
   TFile,
   type App,
+  type DataAdapter,
   type MarkdownPostProcessorContext,
 } from "obsidian";
 import {
@@ -29,6 +30,7 @@ import {
   unwrapById,
 } from "./engine";
 import { HighlightStore } from "./store";
+import type { StorageAdapter } from "./persistence";
 import { ReadingHighlighterSettingTab } from "./settings";
 import {
   Toolbar,
@@ -57,6 +59,39 @@ interface AppWithSetting extends App {
 }
 interface Rerenderable {
   rerender?(full?: boolean): void;
+}
+
+/** Adapts Obsidian's vault DataAdapter to the store's StorageAdapter contract. */
+class VaultStorageAdapter implements StorageAdapter {
+  constructor(private readonly adapter: DataAdapter) {}
+  async read(path: string): Promise<string | null> {
+    try {
+      if (!(await this.adapter.exists(path))) return null;
+      return await this.adapter.read(path);
+    } catch {
+      return null;
+    }
+  }
+  write(path: string, data: string): Promise<void> {
+    return this.adapter.write(path, data);
+  }
+  async remove(path: string): Promise<void> {
+    try {
+      await this.adapter.remove(path);
+    } catch {
+      /* already gone */
+    }
+  }
+  exists(path: string): Promise<boolean> {
+    return this.adapter.exists(path);
+  }
+  async mkdir(path: string): Promise<void> {
+    try {
+      await this.adapter.mkdir(path);
+    } catch {
+      /* already exists */
+    }
+  }
 }
 
 /**
@@ -98,8 +133,22 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
 
   async onload(): Promise<void> {
     const loaded = await this.loadData();
-    this.store = new HighlightStore(loaded ?? null, (data) => this.saveData(data));
+    const adapter = new VaultStorageAdapter(this.app.vault.adapter);
+    const pluginDir =
+      this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+    this.store = new HighlightStore(adapter, pluginDir, (data) => this.saveData(data));
+    await this.store.init(loaded ?? null);
     this.settings = this.store.settings;
+    // If we just migrated the old data.json blob into shards, rewrite data.json
+    // (now settings-only) right away so the highlights aren't stored twice.
+    if (this.store.migrated) {
+      try {
+        await this.store.persistNow();
+        new Notice("Inkless Highlighter: upgraded annotation storage.");
+      } catch (e) {
+        console.error("[inkless-highlighter] migration flush failed", e);
+      }
+    }
 
     this.toolbarPlacement = this.loadToolbarPlacement();
 
@@ -119,10 +168,13 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     // Undo / redo the most recent annotation changes (Reading view only).
     this.registerDomEvent(document, "keydown", (ev) => this.onKeyDown(ev), true);
 
-    // Renew a note's undo history whenever its tab is opened.
+    // Renew a note's undo history whenever its tab is opened, and warm its
+    // annotation shard so the first render and any edits have it resident.
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
-        if (file instanceof TFile) this.history.delete(file.path);
+        if (!(file instanceof TFile)) return;
+        this.history.delete(file.path);
+        if (this.store.hasFile(file.path)) void this.store.ensureFileLoaded(file.path);
       }),
     );
 
@@ -138,14 +190,14 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
         if (this.settings.followRenames && file instanceof TFile) {
-          this.store.rename(oldPath, file.path);
+          void this.store.rename(oldPath, file.path);
         }
       }),
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
         if (this.settings.pruneOnDelete && file instanceof TFile) {
-          this.store.deleteFile(file.path);
+          void this.store.deleteFile(file.path);
         }
       }),
     );
@@ -159,7 +211,11 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     dismissPopovers();
     this.setBodyState(null);
     this.toolbar?.destroy();
-    await this.store?.persistNow();
+    try {
+      await this.store?.persistNow();
+    } catch (e) {
+      console.error("[inkless-highlighter] failed to flush on unload", e);
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -413,6 +469,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   /* ------------------------------------------------------------------ */
 
   async persistSettings(): Promise<void> {
+    this.store.markSettingsDirty();
     await this.store.persistNow();
     this.toolbar?.render();
   }
@@ -435,7 +492,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   async resetAll(defaults: PluginSettings): Promise<void> {
     this.store.setSettings(defaults);
     this.settings = this.store.settings;
-    this.store.clearAll();
+    await this.store.clearAll();
     await this.store.persistNow();
     this.toolbarPlacement = defaultToolbarPlacement();
     this.saveToolbarPlacement();
@@ -454,7 +511,9 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   ): Promise<void> {
     const path = ctx.sourcePath;
     if (!path) return;
-    const records = this.store.getForFile(path);
+    // O(1) manifest check first, so unannotated notes load nothing.
+    if (!this.store.hasFile(path)) return;
+    const records = await this.store.ensureFileLoaded(path);
     if (records.length === 0) return;
 
     // Ensure the section is attached so we can tell Reading from Live Preview.
@@ -513,7 +572,13 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
       createdAt: now,
     }));
 
-    this.store.add(path, records);
+    // The active note is normally already resident (it just rendered); guard the
+    // rare case where its shard is mid-load so a fast drag can't be dropped.
+    if (this.store.hasFile(path) && !this.store.isLoaded(path)) {
+      void this.store.ensureFileLoaded(path).then(() => this.store.add(path, records));
+    } else {
+      this.store.add(path, records);
+    }
 
     // Instant feedback: wrap the live DOM now (post-processor will skip dupes).
     parts.forEach((part, i) => applyPartLive(part, records[i], this.settings));
@@ -635,7 +700,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
         const path = this.activeFilePath();
         const can = !!path && this.store.hasFile(path);
         if (checking) return can;
-        if (can) this.eraseLastInActiveFile();
+        if (can) void this.eraseLastInActiveFile();
         return can;
       },
     });
@@ -646,7 +711,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
         const path = this.activeFilePath();
         const can = !!path && this.store.hasFile(path);
         if (checking) return can;
-        if (can) this.exportActiveNoteAsMarkdown();
+        if (can) void this.exportActiveNoteAsMarkdown();
         return can;
       },
     });
@@ -669,10 +734,10 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     new Notice(`${tool === "highlight" ? "Highlighter" : "Underline"} colour: ${next.name}`);
   }
 
-  private eraseLastInActiveFile(): void {
+  private async eraseLastInActiveFile(): Promise<void> {
     const path = this.activeFilePath();
     if (!path) return;
-    const list = this.store.getForFile(path);
+    const list = await this.store.ensureFileLoaded(path);
     if (list.length === 0) {
       new Notice("No annotations in this note.");
       return;
@@ -686,10 +751,10 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     new Notice("Removed last annotation.");
   }
 
-  private exportActiveNoteAsMarkdown(): void {
+  private async exportActiveNoteAsMarkdown(): Promise<void> {
     const path = this.activeFilePath();
     if (!path) return;
-    const list = this.store.getForFile(path);
+    const list = await this.store.ensureFileLoaded(path);
     if (list.length === 0) {
       new Notice("No annotations in this note.");
       return;
