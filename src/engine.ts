@@ -20,7 +20,8 @@ import {
   CLS_WRAPPER,
   SKIP_TAGS,
 } from "./constants";
-import type { HighlightRecord, PluginSettings } from "./types";
+import { MatchingPipeline, SimHashEngine } from "./production";
+import type { HighlightRecord, PluginSettings, StoredAnnotation } from "./types";
 
 /** Block-level elements we treat as anchoring units. */
 const BLOCK_SELECTOR =
@@ -35,6 +36,8 @@ export interface CapturePart {
   prefix: string;
   suffix: string;
   occurrence: number;
+  paragraphIndex?: number;
+  headingIndex?: number;
 }
 
 interface TextPiece {
@@ -338,7 +341,7 @@ function contextConvincing(matched: number, want: number): boolean {
 function findInNorm(
   norm: string,
   rec: HighlightRecord,
-): { s: number; e: number } | null {
+): { s: number; e: number; confidence: number } | null {
   const target = normStore(rec.exact);
   if (!target) return null;
   const starts: number[] = [];
@@ -370,7 +373,7 @@ function findInNorm(
   });
 
   if (!contextConvincing(bestMatched, wantPrefix.length + wantSuffix.length)) return null;
-  return { s: best, e: best + target.length };
+  return { s: best, e: best + target.length, confidence: 0.95 + Math.min(0.05, bestMatched / Math.max(1, wantPrefix.length + wantSuffix.length) * 0.05) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -397,7 +400,7 @@ function findFuzzy(
   norm: string,
   rec: HighlightRecord,
   target: string,
-): { s: number; e: number } | null {
+): { s: number; e: number; confidence: number } | null {
   const targetLen = target.length;
   const maxSpan = Math.max(targetLen * 4, targetLen + 120);
 
@@ -428,7 +431,10 @@ function findFuzzy(
     includeRight = true;
   }
 
-  if (!left || !right) return null;
+  if (!left || !right) {
+    const structural = (rec as StoredAnnotation).simhash ? MatchingPipeline.match(norm, rec as StoredAnnotation, rec.paragraphIndex ?? 0) : null;
+    return structural && structural.confidence >= 0.2 ? { s: structural.start, e: structural.end, confidence: structural.confidence } : null;
+  }
   const hit = bracketBetween(norm, left, right, includeLeft, includeRight, targetLen, maxSpan);
   if (!hit) return null;
 
@@ -436,7 +442,17 @@ function findFuzzy(
   let { s, e } = hit;
   while (s < e && norm[s] === " ") s++;
   while (e > s && norm[e - 1] === " ") e--;
-  return e > s ? { s, e } : null;
+  if (e <= s) return null;
+  const stored = rec as StoredAnnotation;
+  const moved = norm.slice(s, e);
+  const exactHashSim = SimHashEngine.similarity(stored.simhash?.exact, SimHashEngine.fingerprint(moved));
+  const prefixHashSim = SimHashEngine.similarity(stored.simhash?.prefix, SimHashEngine.fingerprint(norm.slice(Math.max(0, s - 48), s)));
+  const suffixHashSim = SimHashEngine.similarity(stored.simhash?.suffix, SimHashEngine.fingerprint(norm.slice(e, e + 48)));
+  const positionScore = 1 - Math.min(1, Math.abs((e - s) - targetLen) / Math.max(1, targetLen));
+  const structureScore = stored.simhash?.block ? SimHashEngine.similarity(stored.simhash.block, SimHashEngine.fingerprint(norm.slice(Math.max(0, s - 48), e + 48))) : 0.5;
+  const occurrenceScore = 0.7;
+  const confidence = exactHashSim * 0.30 + prefixHashSim * 0.15 + suffixHashSim * 0.15 + positionScore * 0.15 + structureScore * 0.15 + occurrenceScore * 0.10;
+  return { s, e, confidence };
 }
 
 /**
@@ -522,7 +538,26 @@ export function styleWrapper(
     el.style.textDecorationThickness = `${rec.underline?.thickness ?? 2}px`;
     el.style.textUnderlineOffset = `${rec.underline?.offset ?? 3}px`;
   }
-  el.setAttribute("aria-label", rec.note ? rec.note : `${rec.type} annotation`);
+  const confidence = (rec as StoredAnnotation).confidence ?? 1;
+  el.dataset.rhlConfidence = confidence.toFixed(2);
+  el.style.removeProperty("opacity");
+  el.style.removeProperty("border-bottom");
+  el.style.removeProperty("outline");
+  if (confidence >= 0.95) {
+    // Normal solid highlight.
+  } else if (confidence >= 0.8) {
+    el.style.opacity = "0.82";
+    el.title = "This annotation may have shifted.";
+  } else if (confidence >= 0.5) {
+    el.style.opacity = "0.68";
+    el.style.borderBottom = `1px dashed ${rec.color}`;
+    el.title = "Approximate annotation match.";
+  } else if (confidence >= 0.2) {
+    el.style.opacity = "0.32";
+    el.style.outline = `1px dotted ${rec.color}`;
+    el.title = "Very uncertain annotation match; click to verify.";
+  }
+  el.setAttribute("aria-label", rec.note ? rec.note : `${rec.type} annotation${confidence < 0.95 ? ` (${Math.round(confidence * 100)}% match confidence)` : ""}`);
 }
 
 /** Create a fresh wrapper element for a record. */
@@ -566,7 +601,9 @@ export function wrapRange(
       const parent = target.parentNode;
       if (!parent) continue;
       const w = makeWrapper();
-      parent.insertBefore(w, target);
+      const fragment = document.createDocumentFragment();
+      fragment.appendChild(w);
+      parent.insertBefore(fragment, target);
       w.appendChild(target);
       wrapped++;
     } catch {
@@ -617,6 +654,16 @@ function leafBlocksInRange(range: Range, root: HTMLElement): HTMLElement[] {
   return b ? [b] : [];
 }
 
+function structuralPosition(block: HTMLElement): { paragraphIndex: number; headingIndex: number } {
+  const root = block.closest(".markdown-preview-section, .markdown-reading-view, .markdown-preview-view") ?? block.parentElement;
+  const blocks = root ? Array.from(root.querySelectorAll<HTMLElement>(BLOCK_SELECTOR)) : [block];
+  const headings = root ? Array.from(root.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")) : [];
+  return {
+    paragraphIndex: Math.max(0, blocks.indexOf(block)),
+    headingIndex: headings.filter((heading) => heading.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).length,
+  };
+}
+
 function buildPart(
   block: HTMLElement,
   rawStart: number,
@@ -640,7 +687,7 @@ function buildPart(
     occurrence++;
     idx = norm.indexOf(exact, idx + 1);
   }
-  return { block, rawStart, rawEnd, exact, prefix, suffix, occurrence };
+  return { block, rawStart, rawEnd, exact, prefix, suffix, occurrence, ...structuralPosition(block) };
 }
 
 /**
@@ -739,7 +786,11 @@ export function applyToContainer(
     if (!text) break;
     const { norm, map } = buildNorm(text);
     const hit = findInNorm(norm, rec);
-    if (!hit) continue;
+    if (!hit || hit.confidence < 0.2) {
+      container.dispatchEvent(new CustomEvent("rhl-orphan", { bubbles: true, detail: { record: rec } }));
+      continue;
+    }
+    (rec as StoredAnnotation).confidence = hit.confidence;
     const rawStart = map[hit.s];
     const rawEnd = hit.e - 1 >= 0 ? map[hit.e - 1] + 1 : rawStart;
     // pieces are recomputed inside wrapRange; we only needed `text`/`norm` here.
