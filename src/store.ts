@@ -39,12 +39,15 @@ export class HighlightStore {
       ...base,
       ...partial,
       underline: { ...base.underline, ...(partial.underline ?? {}) },
-      toolbarPlacement: { ...base.toolbarPlacement, ...(partial.toolbarPlacement ?? {}) },
       palette:
         Array.isArray(partial.palette) && partial.palette.length > 0
           ? partial.palette
           : base.palette,
     };
+    // Toolbar placement is now device-local (localStorage). Drop any copy that
+    // older versions persisted into the synced data so it can't travel between
+    // devices via Obsidian Sync.
+    delete (merged as unknown as Record<string, unknown>).toolbarPlacement;
     return merged;
   }
 

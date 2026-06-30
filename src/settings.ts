@@ -16,7 +16,7 @@ import {
 } from "obsidian";
 import { DEFAULT_PALETTE, defaultSettings } from "./constants";
 import { genId } from "./engine";
-import type { FileHighlights, PaletteColor } from "./types";
+import type { FileHighlights, PaletteColor, ToolbarCorner } from "./types";
 import type ReadingHighlighterPlugin from "./main";
 
 export class ReadingHighlighterSettingTab extends PluginSettingTab {
@@ -190,15 +190,29 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
       );
 
     new Setting(root)
-      .setName("Neon glow")
+      .setName("Neon glow on highlights")
       .setDesc(
-        "Wrap new annotations in a luminous halo of their own colour. The default " +
-          "palette is tuned for it. Existing annotations keep the look they were " +
-          "created with; you can also toggle this from a tool's options popover.",
+        "Wrap new highlights in a luminous halo of their own colour. The default " +
+          "palette is tuned for it. Existing highlights keep the look they were " +
+          "created with; you can also toggle this from the highlighter's popover.",
       )
       .addToggle((t) =>
         t.setValue(this.plugin.settings.neonEffect).onChange(async (v) => {
           this.plugin.settings.neonEffect = v;
+          await this.plugin.persistSettings();
+        }),
+      );
+
+    new Setting(root)
+      .setName("Brighter underlines")
+      .setDesc(
+        "Draw new underlines in a more vivid version of their colour. The line " +
+          "alone changes — nothing is ever painted behind the text. Existing " +
+          "underlines are unaffected; you can also toggle this from the underline's popover.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.brightUnderline).onChange(async (v) => {
+          this.plugin.settings.brightUnderline = v;
           await this.plugin.persistSettings();
         }),
       );
@@ -292,32 +306,33 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
 
     new Setting(root)
       .setName("Toolbar corner")
-      .setDesc("Where the toolbar docks before you drag it.")
+      .setDesc("Where the toolbar docks before you drag it. This is remembered per device, so it never syncs to your other devices.")
       .addDropdown((d) =>
         d
           .addOption("tl", "Top left")
           .addOption("tr", "Top right")
           .addOption("bl", "Bottom left")
           .addOption("br", "Bottom right")
-          .setValue(this.plugin.settings.toolbarPlacement.corner)
-          .onChange(async (v) => {
-            this.plugin.settings.toolbarPlacement.corner =
-              v as typeof this.plugin.settings.toolbarPlacement.corner;
-            this.plugin.settings.toolbarPlacement.x = null;
-            this.plugin.settings.toolbarPlacement.y = null;
-            await this.plugin.persistSettings();
+          .setValue(this.plugin.getToolbarPlacement().corner)
+          .onChange((v) => {
+            const p = this.plugin.getToolbarPlacement();
+            p.corner = v as ToolbarCorner;
+            p.x = null;
+            p.y = null;
+            this.plugin.saveToolbarPlacement();
             this.plugin.rebuildToolbar();
           }),
       );
 
     new Setting(root)
       .setName("Reset toolbar position")
-      .setDesc("Clear any manual drag offset and snap the toolbar back to its corner.")
+      .setDesc("Clear any manual drag offset and snap the toolbar back to its corner on this device.")
       .addButton((b) =>
-        b.setButtonText("Reset position").onClick(async () => {
-          this.plugin.settings.toolbarPlacement.x = null;
-          this.plugin.settings.toolbarPlacement.y = null;
-          await this.plugin.persistSettings();
+        b.setButtonText("Reset position").onClick(() => {
+          const p = this.plugin.getToolbarPlacement();
+          p.x = null;
+          p.y = null;
+          this.plugin.saveToolbarPlacement();
           this.plugin.rebuildToolbar();
           new Notice("Toolbar position reset.");
         }),

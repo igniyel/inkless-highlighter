@@ -33,6 +33,7 @@
     "lastUnderlineColorId": "c-pink",
     "highlightOpacity": 0.4,
     "neonEffect": false,
+    "brightUnderline": false,
     "underline": {
       "thickness": 2,
       "style": "solid",
@@ -48,11 +49,6 @@
     "followRenames": true,
     "pruneOnDelete": false,
     "showToolbar": true,
-    "toolbarPlacement": {
-      "corner": "br",
-      "x": null,
-      "y": null
-    },
     "showEraser": true,
     "showSettingsButton": true,
     "highContrast": false

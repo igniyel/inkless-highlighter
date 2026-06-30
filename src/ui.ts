@@ -8,8 +8,14 @@
  */
 
 import { App, Modal, Platform, Setting, setIcon, setTooltip } from "obsidian";
-import { genId, rgba } from "./engine";
-import type { ActiveTool, PaletteColor, PluginSettings, ToolType } from "./types";
+import { brighten, genId, rgba } from "./engine";
+import type {
+  ActiveTool,
+  PaletteColor,
+  PluginSettings,
+  ToolType,
+  ToolbarPlacement,
+} from "./types";
 
 /** Contract the plugin fulfils so the UI can stay decoupled. */
 export interface UIHost {
@@ -28,6 +34,11 @@ export interface UIHost {
   saveSettings(): void;
   /** Open the plugin's settings tab. */
   openSettings(): void;
+
+  /** Device-local toolbar placement (not synced across devices). */
+  getToolbarPlacement(): ToolbarPlacement;
+  /** Persist the toolbar placement for this device. */
+  saveToolbarPlacement(): void;
 
   /** Management actions, operating on a clicked wrapper element. */
   recolorAnnotation(el: HTMLElement, colorId: string): void;
@@ -375,8 +386,9 @@ export class Toolbar {
     closeCurrentPopover();
     currentPopover = buildPalettePopover(this.host, tool, () => this.render());
     const rect = anchor.getBoundingClientRect();
-    const preferLeft = this.host.settings.toolbarPlacement.corner.endsWith("r");
-    const preferAbove = this.host.settings.toolbarPlacement.corner.startsWith("b");
+    const corner = this.host.getToolbarPlacement().corner;
+    const preferLeft = corner.endsWith("r");
+    const preferAbove = corner.startsWith("b");
     positionNear(currentPopover.el, rect, preferAbove, preferLeft);
   }
 
@@ -400,7 +412,7 @@ export class Toolbar {
   /* ----- placement & dragging ----- */
 
   applyPlacement(): void {
-    const p = this.host.settings.toolbarPlacement;
+    const p = this.host.getToolbarPlacement();
     const s = this.el.style;
     s.top = s.bottom = s.left = s.right = "";
     const pad = 16;
@@ -423,7 +435,7 @@ export class Toolbar {
    * another. Corner-docked toolbars need no clamping (they hug an edge already).
    */
   clampIntoView(): void {
-    const p = this.host.settings.toolbarPlacement;
+    const p = this.host.getToolbarPlacement();
     if (p.x === null || p.y === null) return;
     const w = this.el.offsetWidth;
     const h = this.el.offsetHeight;
@@ -440,7 +452,7 @@ export class Toolbar {
     if (x !== p.x || y !== p.y) {
       p.x = x;
       p.y = y;
-      this.host.saveSettings();
+      this.host.saveToolbarPlacement();
     }
   }
 
@@ -456,6 +468,7 @@ export class Toolbar {
       const rect = this.el.getBoundingClientRect();
       const offX = ev.clientX - rect.left;
       const offY = ev.clientY - rect.top;
+      const placement = this.host.getToolbarPlacement();
       const onMove = (e: PointerEvent) => {
         const x = Math.max(0, Math.min(e.clientX - offX, window.innerWidth - rect.width));
         const y = Math.max(0, Math.min(e.clientY - offY, window.innerHeight - rect.height));
@@ -463,13 +476,13 @@ export class Toolbar {
         this.el.style.top = `${y}px`;
         this.el.style.right = "";
         this.el.style.bottom = "";
-        this.host.settings.toolbarPlacement.x = x;
-        this.host.settings.toolbarPlacement.y = y;
+        placement.x = x;
+        placement.y = y;
       };
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
-        this.host.saveSettings();
+        this.host.saveToolbarPlacement();
       };
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
@@ -727,21 +740,29 @@ function buildPalettePopover(
     });
   }
 
-  // Neon glow toggle (shared default for both tools).
-  const neonRow = controls.createDiv({ cls: "rhl-control-row" });
-  neonRow.createSpan({ cls: "rhl-control-label", text: "Neon glow" });
-  const toggle = neonRow.createDiv({ cls: "checkbox-container rhl-toggle" });
-  if (host.settings.neonEffect) toggle.addClass("is-enabled");
+  // Emphasis toggle: a neon glow for highlights, a brighter colour for
+  // underlines. They are independent defaults, one per tool.
+  const isHighlight = tool === "highlight";
+  const getEmphasis = () =>
+    isHighlight ? host.settings.neonEffect : host.settings.brightUnderline;
+  const emphasisRow = controls.createDiv({ cls: "rhl-control-row" });
+  emphasisRow.createSpan({
+    cls: "rhl-control-label",
+    text: isHighlight ? "Neon glow" : "Brighter",
+  });
+  const toggle = emphasisRow.createDiv({ cls: "checkbox-container rhl-toggle" });
+  if (getEmphasis()) toggle.addClass("is-enabled");
   const toggleInput = toggle.createEl("input");
   toggleInput.type = "checkbox";
-  toggleInput.checked = host.settings.neonEffect;
+  toggleInput.checked = getEmphasis();
   toggle.addEventListener("click", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     const next = !toggle.hasClass("is-enabled");
     toggle.toggleClass("is-enabled", next);
     toggleInput.checked = next;
-    host.settings.neonEffect = next;
+    if (isHighlight) host.settings.neonEffect = next;
+    else host.settings.brightUnderline = next;
     host.saveSettings();
     updatePreview();
   });
@@ -759,14 +780,12 @@ function buildPalettePopover(
         s.boxShadow = `0 0 4px ${rgba(color, 0.95)}, 0 0 10px ${rgba(color, 0.55)}`;
       }
     } else {
+      // Brighter underlines change only the line colour — never a background.
       s.textDecoration = "underline";
-      s.textDecorationColor = color;
+      s.textDecorationColor = host.settings.brightUnderline ? brighten(color) : color;
       s.textDecorationThickness = `${host.settings.underline.thickness}px`;
       s.textDecorationStyle = host.settings.underline.style;
       s.textUnderlineOffset = `${host.settings.underline.offset}px`;
-      if (host.settings.neonEffect) {
-        s.filter = `drop-shadow(0 0 2px ${rgba(color, 0.85)})`;
-      }
     }
   };
 

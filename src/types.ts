@@ -53,9 +53,10 @@ export interface HighlightRecord {
   /** Background opacity for highlights (0..1). Ignored for underlines. */
   opacity: number;
   /**
-   * Whether this annotation was created with the neon glow effect enabled.
+   * Whether this annotation was created with its tool's emphasis effect on —
+   * the neon glow for highlights, or the brighter colour for underlines.
    * Snapshotted (like colour and opacity) so appearance survives later changes
-   * to the global default.
+   * to the global defaults.
    */
   neon?: boolean;
   /** Underline options snapshot. Present only for underline records. */
@@ -85,7 +86,11 @@ export type FileHighlights = Record<string, HighlightRecord[]>;
 /** Corner the floating toolbar docks to before any manual drag. */
 export type ToolbarCorner = "tl" | "tr" | "bl" | "br";
 
-/** Persisted toolbar placement. */
+/**
+ * Toolbar placement. Stored **per device** in localStorage rather than in the
+ * synced plugin data, because a pixel position that is right on one screen is
+ * wrong on another — and Obsidian Sync would otherwise copy it everywhere.
+ */
 export interface ToolbarPlacement {
   corner: ToolbarCorner;
   /** Manual pixel offset from the docked corner, if the user dragged it. */
@@ -106,11 +111,15 @@ export interface PluginSettings {
   /** Default background opacity for new highlights (0..1). */
   highlightOpacity: number;
   /**
-   * Add a luminous neon glow to new annotations. The default palette colours
-   * are tuned to read well both as a glowing highlight and as a crisp
-   * underline, so this works for either tool.
+   * Add a luminous neon glow to new *highlights*. The default palette colours
+   * are tuned for it. Underlines use {@link brightUnderline} instead.
    */
   neonEffect: boolean;
+  /**
+   * Render new *underlines* in a brighter, more vivid version of their colour.
+   * The highlighter's equivalent is {@link neonEffect}.
+   */
+  brightUnderline: boolean;
   /** Default underline options for new underlines. */
   underline: UnderlineStyleOptions;
 
@@ -139,8 +148,6 @@ export interface PluginSettings {
 
   /** Show the floating toolbar in Reading view. */
   showToolbar: boolean;
-  /** Toolbar placement. */
-  toolbarPlacement: ToolbarPlacement;
   /** Show the eraser button in the toolbar. */
   showEraser: boolean;
   /** Show the settings (gear) button in the toolbar. */

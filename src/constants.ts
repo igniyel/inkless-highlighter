@@ -1,4 +1,4 @@
-import type { PaletteColor, PluginSettings } from "./types";
+import type { PaletteColor, PluginSettings, ToolbarPlacement } from "./types";
 
 /** Bump when the persisted-data shape changes in a breaking way. */
 export const SCHEMA_VERSION = 1;
@@ -41,6 +41,7 @@ export function defaultSettings(): PluginSettings {
     lastUnderlineColorId: "c-pink",
     highlightOpacity: 0.4,
     neonEffect: false,
+    brightUnderline: false,
     underline: { thickness: 2, style: "solid", offset: 3 },
 
     stickyTool: true,
@@ -54,10 +55,17 @@ export function defaultSettings(): PluginSettings {
     pruneOnDelete: false,
 
     showToolbar: true,
-    toolbarPlacement: { corner: "br", x: null, y: null },
     showEraser: true,
     showSettingsButton: true,
 
     highContrast: false,
   };
+}
+
+/**
+ * Default toolbar placement. Kept separate from {@link defaultSettings} because
+ * placement is stored per device (localStorage), not in the synced plugin data.
+ */
+export function defaultToolbarPlacement(): ToolbarPlacement {
+  return { corner: "br", x: null, y: null };
 }

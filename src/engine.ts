@@ -87,6 +87,69 @@ function clamp01(n: number): number {
   return Math.min(1, Math.max(0, n));
 }
 
+/** Parse a #rgb / #rrggbb hex into 0–255 channels, or null if malformed. */
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  let h = hex.trim().replace(/^#/, "");
+  if (h.length === 3) {
+    h = h
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  }
+  const int = parseInt(h, 16);
+  if (h.length !== 6 || Number.isNaN(int)) return null;
+  return { r: (int >> 16) & 255, g: (int >> 8) & 255, b: int & 255 };
+}
+
+function toHex(n: number): string {
+  return Math.round(Math.min(255, Math.max(0, n))).toString(16).padStart(2, "0");
+}
+
+/**
+ * Return a brighter, more vivid version of a hex colour, used to emphasise
+ * underlines. Works in HSL: it lifts saturation and keeps lightness in a
+ * legible 0.5–0.7 band, so the line reads as "neon-bright" without ever
+ * tinting the area behind the text.
+ */
+export function brighten(hex: string): string {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  const r = rgb.r / 255;
+  const g = rgb.g / 255;
+  const b = rgb.b / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let l = (max + min) / 2;
+  let s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+  let h = 0;
+  if (d !== 0) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+
+  s = Math.min(1, s * 1.3 + 0.1);
+  l = Math.min(0.7, Math.max(0.5, l));
+
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let rr = 0;
+  let gg = 0;
+  let bb = 0;
+  if (h < 60) [rr, gg, bb] = [c, x, 0];
+  else if (h < 120) [rr, gg, bb] = [x, c, 0];
+  else if (h < 180) [rr, gg, bb] = [0, c, x];
+  else if (h < 240) [rr, gg, bb] = [0, x, c];
+  else if (h < 300) [rr, gg, bb] = [x, 0, c];
+  else [rr, gg, bb] = [c, 0, x];
+
+  return "#" + toHex((rr + m) * 255) + toHex((gg + m) * 255) + toHex((bb + m) * 255);
+}
+
 /* ------------------------------------------------------------------ */
 /* Text-node collection and offset maths                              */
 /* ------------------------------------------------------------------ */
@@ -298,14 +361,12 @@ export function styleWrapper(
   } else {
     el.style.backgroundColor = "transparent";
     el.style.textDecorationLine = "underline";
-    el.style.textDecorationColor = rec.color;
+    // "Brighter" underlines simply use a more vivid line colour. No glow or
+    // filter, so nothing is ever painted behind the text itself.
+    el.style.textDecorationColor = rec.neon ? brighten(rec.color) : rec.color;
     el.style.textDecorationStyle = rec.underline?.style ?? "solid";
     el.style.textDecorationThickness = `${rec.underline?.thickness ?? 2}px`;
     el.style.textUnderlineOffset = `${rec.underline?.offset ?? 3}px`;
-    if (rec.neon) {
-      // drop-shadow follows the rendered underline, giving it a neon halo.
-      el.style.filter = `drop-shadow(0 0 2px ${rgba(rec.color, 0.85)})`;
-    }
   }
   el.setAttribute("aria-label", rec.note ? rec.note : `${rec.type} annotation`);
 }

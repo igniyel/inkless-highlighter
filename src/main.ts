@@ -36,12 +36,19 @@ import {
   openAnnotationPopover,
   type UIHost,
 } from "./ui";
-import { ATTR_GROUP, ATTR_ID, READING_VIEW_SELECTOR } from "./constants";
+import {
+  ATTR_GROUP,
+  ATTR_ID,
+  READING_VIEW_SELECTOR,
+  defaultToolbarPlacement,
+} from "./constants";
 import type {
   ActiveTool,
   HighlightRecord,
   PluginSettings,
   ToolType,
+  ToolbarCorner,
+  ToolbarPlacement,
 } from "./types";
 
 /** Minimal structural types for semi-private Obsidian APIs we touch. */
@@ -56,6 +63,8 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   store!: HighlightStore;
   /** Same object reference as store.settings, so edits propagate both ways. */
   settings!: PluginSettings;
+  /** Device-local toolbar placement (kept out of synced data). */
+  private toolbarPlacement!: ToolbarPlacement;
   private toolbar!: Toolbar;
   private activeTool: ActiveTool = null;
   /** Timestamp of the last successful capture, to swallow the trailing click. */
@@ -69,6 +78,8 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     const loaded = await this.loadData();
     this.store = new HighlightStore(loaded ?? null, (data) => this.saveData(data));
     this.settings = this.store.settings;
+
+    this.toolbarPlacement = this.loadToolbarPlacement();
 
     this.addSettingTab(new ReadingHighlighterSettingTab(this.app, this));
 
@@ -155,6 +166,63 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     this.toolbar?.render();
   }
 
+  /* ----- device-local toolbar placement ----- */
+
+  getToolbarPlacement(): ToolbarPlacement {
+    return this.toolbarPlacement;
+  }
+
+  /** Persist the toolbar placement to this device only (never synced). */
+  saveToolbarPlacement(): void {
+    const key = this.toolbarStorageKey();
+    try {
+      if (typeof this.app.saveLocalStorage === "function") {
+        this.app.saveLocalStorage(key, this.toolbarPlacement);
+      } else {
+        window.localStorage.setItem(this.fallbackKey(key), JSON.stringify(this.toolbarPlacement));
+      }
+    } catch {
+      /* localStorage may be unavailable; placement just won't persist. */
+    }
+  }
+
+  private toolbarStorageKey(): string {
+    return `${this.manifest.id}:toolbar-placement`;
+  }
+
+  /**
+   * window.localStorage is shared across vaults on a device, so namespace the
+   * fallback key by vault name. (App.loadLocalStorage already scopes per vault.)
+   */
+  private fallbackKey(key: string): string {
+    return `${key}:${this.app.vault.getName()}`;
+  }
+
+  /** Read the per-device placement, falling back to a sane default. */
+  private loadToolbarPlacement(): ToolbarPlacement {
+    const fallback = defaultToolbarPlacement();
+    const key = this.toolbarStorageKey();
+    let raw: unknown = null;
+    try {
+      if (typeof this.app.loadLocalStorage === "function") {
+        raw = this.app.loadLocalStorage(key);
+      } else {
+        const stored = window.localStorage.getItem(this.fallbackKey(key));
+        raw = stored ? JSON.parse(stored) : null;
+      }
+    } catch {
+      raw = null;
+    }
+    if (!raw || typeof raw !== "object") return fallback;
+    const p = raw as Partial<ToolbarPlacement>;
+    const corners: ToolbarCorner[] = ["tl", "tr", "bl", "br"];
+    return {
+      corner: corners.includes(p.corner as ToolbarCorner) ? (p.corner as ToolbarCorner) : "br",
+      x: typeof p.x === "number" && Number.isFinite(p.x) ? p.x : null,
+      y: typeof p.y === "number" && Number.isFinite(p.y) ? p.y : null,
+    };
+  }
+
   openSettings(): void {
     const app = this.app as AppWithSetting;
     app.setting?.open();
@@ -239,6 +307,8 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     this.settings = this.store.settings;
     this.store.clearAll();
     await this.store.persistNow();
+    this.toolbarPlacement = defaultToolbarPlacement();
+    this.saveToolbarPlacement();
     this.setActiveTool(null);
     this.rebuildToolbar();
     this.refreshReadingViews();
@@ -304,7 +374,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
       colorId,
       color,
       opacity: this.settings.highlightOpacity,
-      neon: this.settings.neonEffect,
+      neon: tool === "highlight" ? this.settings.neonEffect : this.settings.brightUnderline,
       underline: tool === "underline" ? { ...this.settings.underline } : undefined,
       exact: part.exact,
       prefix: part.prefix,

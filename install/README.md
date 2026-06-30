@@ -74,9 +74,9 @@ This is the exact flow the plugin implements.
 
    *On a computer*, each tool button responds to two clicks:
    - **Left-click** opens that tool's **palette popover** — where you pick a
-     colour and set everything (opacity for the highlighter; thickness and line
-     style for the underline; neon glow for either) — and arms the tool at the
-     same time.
+     colour and set everything (opacity and a neon glow for the highlighter;
+     thickness, line style, and a brighter line for the underline) — and arms
+     the tool at the same time.
    - **Right-click** *only selects* the tool (arms it) without opening the
      popover. Right-click an already-selected tool to deselect it.
 
@@ -99,11 +99,12 @@ This is the exact flow the plugin implements.
 4. **Adjust parameters any time.** Re-open a tool's palette popover whenever it
    is already armed — left-click it (computer) or long-press it (touch); this
    does **not** disarm it. In the popover:
-   - **Highlighter:** choose a colour and set **opacity**.
-   - **Underline:** choose a colour and set **thickness** and **line style**
-     (solid / dashed / dotted / wavy).
-   - **Both:** toggle a **neon glow**, and add a new named colour from the
-     dashed **“+” tile** at the end of the palette.
+   - **Highlighter:** choose a colour, set **opacity**, and toggle a **neon
+     glow**.
+   - **Underline:** choose a colour, set **thickness** and **line style**
+     (solid / dashed / dotted / wavy), and toggle a **brighter** line.
+   - **Both:** add a new named colour from the dashed **“+” tile** at the end of
+     the palette.
    A live preview shows the result.
 
 5. **Manage an existing annotation.** With no tool armed, click any highlight or
@@ -114,7 +115,9 @@ This is the exact flow the plugin implements.
    them. Click "stop" (the cursor icon) to disarm everything.
 
 7. **Move the toolbar.** Drag the grip handle to reposition it; the position is
-   remembered. "Reset toolbar position" in settings snaps it back to its corner.
+   remembered **per device** (it is never synced to your other devices, so a
+   spot that suits your phone never displaces the toolbar on your desktop).
+   "Reset toolbar position" in settings snaps it back to its corner.
 
 On a computer, a click on a tool icon reaches every parameter and a right-click
 is the quick "just select it" gesture (the two can be swapped in settings). On
@@ -207,7 +210,8 @@ settings; on touch, tap selects and long-press opens the options.)
 - **Highlighter:** opacity slider (10–100%).
 - **Underline:** thickness slider (1–5 px) and a style dropdown
   (solid / dashed / dotted / wavy).
-- **Neon glow** toggle for either tool.
+- A **neon glow** toggle for the highlighter, or a **brighter** toggle for the
+  underline.
 - A live preview of the current settings.
 
 ### Annotation popover (click an annotation with no tool armed)
@@ -250,7 +254,8 @@ settings; on touch, tap selects and long-press opens the options.)
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Default highlight opacity | 40% | Starting strength for new highlights. |
-| Neon glow | Off | Wrap new annotations in a luminous halo of their colour. |
+| Neon glow on highlights | Off | Wrap new highlights in a luminous halo of their colour. |
+| Brighter underlines | Off | Draw new underlines in a more vivid version of their colour (line only). |
 | Default underline thickness | 2 px | Line thickness for new underlines. |
 | Default underline style | Solid | Line style for new underlines. |
 | Default underline offset | 3 px | Gap between baseline and underline. |
@@ -262,8 +267,8 @@ settings; on touch, tap selects and long-press opens the options.)
 | --- | --- | --- |
 | Swap left/right click on tool buttons | Off | Off: left-click opens the palette, right-click selects. On: swap them. |
 | Show toolbar in Reading view | On | Hide it entirely if you prefer commands. |
-| Toolbar corner | Bottom right | Where it docks before you drag it. |
-| Reset toolbar position | — | Clears any manual drag offset. |
+| Toolbar corner | Bottom right | Where it docks before you drag it (remembered per device). |
+| Reset toolbar position | — | Clears this device's manual drag offset. |
 | Show eraser button | On | Show/hide the eraser. |
 | Show settings button | On | Show/hide the gear. |
 
@@ -356,7 +361,8 @@ appearance is snapshotted).
 - **Desktop and mobile:** both. Touch drag-to-select works in Reading view; on
   phones and iPad the toolbar uses larger targets, a **tap** selects a tool and
   a **long-press** opens its options. The toolbar is kept on-screen when the
-  device rotates or the window resizes.
+  device rotates or the window resizes, and its position is stored **per device**
+  so cloud sync never moves it on your other machines.
 - **Themes:** the UI is built entirely from Obsidian theme variables, so it
   adapts to light, dark, and community themes automatically.
 
@@ -470,8 +476,9 @@ Stored via Obsidian's `saveData` in the plugin's `data.json`:
         "groupId": "…",
         "type": "highlight",        // or "underline"
         "colorId": "c-yellow",
-        "color": "#ffd54f",
+        "color": "#ffe14d",
         "opacity": 0.4,
+        "neon": false,             // neon glow (highlight) / brighter (underline)
         "underline": { "thickness": 2, "style": "solid", "offset": 3 },
         "exact": "the selected text",
         "prefix": "context before",
