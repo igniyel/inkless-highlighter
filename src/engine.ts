@@ -301,7 +301,9 @@ function findInNorm(
     starts.push(idx);
     idx = norm.indexOf(target, idx + 1);
   }
-  if (starts.length === 0) return null;
+  // The exact text is gone (the user edited it): re-anchor by surrounding
+  // context so the annotation survives instead of vanishing.
+  if (starts.length === 0) return findFuzzy(norm, rec, target);
   if (starts.length === 1) return { s: starts[0], e: starts[0] + target.length };
 
   const wantPrefix = normStore(rec.prefix);
@@ -321,6 +323,110 @@ function findInNorm(
     }
   });
   return { s: best, e: best + target.length };
+}
+
+/* ------------------------------------------------------------------ */
+/* Fuzzy re-anchoring (when the annotated text was edited)             */
+/* ------------------------------------------------------------------ */
+
+/** Minimum length of stored context before we trust it as a side anchor. */
+const ANCHOR_MIN = 4;
+/** How many context characters to use from each side as an anchor. */
+const ANCHOR_LEN = 24;
+
+/**
+ * Re-locate an annotation whose exact text no longer exists, so an edit to the
+ * annotated sentence does not make the highlight/underline disappear.
+ *
+ * It brackets the annotation between a left and a right anchor, choosing the
+ * strongest available for each side: the stored surrounding context when there
+ * is enough of it, otherwise the selection's own first / last word (which
+ * usually survives when the middle is reworded). Every candidate is bounded by
+ * a maximum span and scored toward the original length, so a stray match can't
+ * swallow a huge stretch of text.
+ */
+function findFuzzy(
+  norm: string,
+  rec: HighlightRecord,
+  target: string,
+): { s: number; e: number } | null {
+  const targetLen = target.length;
+  const maxSpan = Math.max(targetLen * 4, targetLen + 120);
+
+  const wantPrefix = normStore(rec.prefix);
+  const wantSuffix = normStore(rec.suffix);
+  const words = target.split(" ");
+  const firstWord = words[0] ?? "";
+  const lastWord = words.length > 1 ? words[words.length - 1] : "";
+
+  // Pick the strongest available anchor for each side independently: the stored
+  // surrounding context when there is enough of it, otherwise the selection's
+  // own first / last word (which usually survives a reword of the middle).
+  let left = "";
+  let includeLeft = false;
+  if (wantPrefix.length >= ANCHOR_MIN) {
+    left = wantPrefix.slice(-ANCHOR_LEN);
+  } else if (firstWord.length >= 3) {
+    left = firstWord;
+    includeLeft = true;
+  }
+
+  let right = "";
+  let includeRight = false;
+  if (wantSuffix.length >= ANCHOR_MIN) {
+    right = wantSuffix.slice(0, ANCHOR_LEN);
+  } else if (lastWord.length >= 3 && lastWord !== firstWord) {
+    right = lastWord;
+    includeRight = true;
+  }
+
+  if (!left || !right) return null;
+  const hit = bracketBetween(norm, left, right, includeLeft, includeRight, targetLen, maxSpan);
+  if (!hit) return null;
+
+  // Drop any whitespace the anchors left dangling at the edges.
+  let { s, e } = hit;
+  while (s < e && norm[s] === " ") s++;
+  while (e > s && norm[e - 1] === " ") e--;
+  return e > s ? { s, e } : null;
+}
+
+/**
+ * Find a range delimited by a `left` and `right` anchor string. `includeLeft` /
+ * `includeRight` decide whether each anchor is part of the range (end-word
+ * bracket) or merely borders it (context bracket). Among valid candidates,
+ * prefers the one whose length is closest to `targetLen`.
+ */
+function bracketBetween(
+  norm: string,
+  left: string,
+  right: string,
+  includeLeft: boolean,
+  includeRight: boolean,
+  targetLen: number,
+  maxSpan: number,
+): { s: number; e: number } | null {
+  let best: { s: number; e: number } | null = null;
+  let bestScore = Infinity;
+  let li = norm.indexOf(left);
+  while (li >= 0) {
+    const s = includeLeft ? li : li + left.length;
+    const searchFrom = li + left.length;
+    const ri = norm.indexOf(right, searchFrom);
+    if (ri >= 0) {
+      const e = includeRight ? ri + right.length : ri;
+      const span = e - s;
+      if (span > 0 && span <= maxSpan) {
+        const score = Math.abs(span - targetLen);
+        if (score < bestScore) {
+          bestScore = score;
+          best = { s, e };
+        }
+      }
+    }
+    li = norm.indexOf(left, li + 1);
+  }
+  return best;
 }
 
 /* ------------------------------------------------------------------ */
@@ -540,6 +646,26 @@ export function captureSelection(
 /* ------------------------------------------------------------------ */
 
 /**
+ * Cheap pre-filter for {@link applyToContainer}: does this container plausibly
+ * contain `rec`, either verbatim or in an edited form we could re-anchor to?
+ * Returns true unless none of the record's distinctive anchors appear, so it
+ * never hides a record that fuzzy matching could still place.
+ */
+function mayContain(haystack: string, rec: HighlightRecord): boolean {
+  const probes: string[] = [];
+  const words = normStore(rec.exact).split(" ");
+  if (words[0]) probes.push(words[0]);
+  if (words.length > 1) probes.push(words[words.length - 1]);
+  const pfx = normStore(rec.prefix);
+  const sfx = normStore(rec.suffix);
+  if (pfx) probes.push(pfx.slice(-12));
+  if (sfx) probes.push(sfx.slice(0, 12));
+  const usable = probes.filter((p) => p.length >= 4);
+  if (usable.length === 0) return true; // nothing distinctive to test on
+  return usable.some((p) => haystack.includes(p));
+}
+
+/**
  * Apply all records that occur within `container`. Safe to call repeatedly:
  * a record already present (by id) in this container is skipped.
  */
@@ -553,9 +679,11 @@ export function applyToContainer(
   if (!haystack) return;
 
   for (const rec of records) {
-    // Cheap pre-filter: first token of the anchor must appear somewhere.
-    const token = rec.exact.split(/\s+/)[0];
-    if (token && !haystack.includes(token)) continue;
+    // Cheap pre-filter: skip a record only when none of its distinctive anchors
+    // (first/last word of the selection, or a slice of the surrounding context)
+    // appear here — so an edit to the span itself still leaves the record a
+    // chance to re-anchor via findFuzzy.
+    if (!mayContain(haystack, rec)) continue;
     // Idempotency within this render pass.
     if (container.querySelector(`[${ATTR_ID}="${cssEscape(rec.id)}"]`)) continue;
 

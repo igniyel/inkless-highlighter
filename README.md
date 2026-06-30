@@ -169,13 +169,19 @@ On every render the engine:
 3. Finds every position of `exact`. If there is exactly one, it wins. If there
    are several, each candidate is scored by how much of its surrounding text
    matches the stored `prefix`/`suffix`, with `occurrence` breaking ties.
-4. Wraps the matching characters by **splitting and wrapping the existing text
+4. **If `exact` is gone** — because you edited the annotated sentence — it
+   *re-anchors* instead of giving up: it brackets the annotation between the
+   strongest anchor on each side (the stored context, or the selection's own
+   first / last word) and re-applies to whatever text now sits between them.
+   The candidate span is length-bounded so a stray match can't engulf the page.
+5. Wraps the matching characters by **splitting and wrapping the existing text
    nodes** — never by injecting HTML. A selection that crosses inline elements
    (bold, links, etc.) yields several adjacent wrappers that share one id.
 
-Because matching is text-based, an annotation keeps working when the surrounding
-note is edited moderately, when the note is re-rendered lazily as you scroll, or
-when it is viewed on another device.
+Because matching is text-based and self-healing, an annotation keeps working
+when you reword the sentence it covers, when the surrounding note is edited, when
+the note is re-rendered lazily as you scroll, or when it is viewed on another
+device.
 
 ### Capturing a selection
 
@@ -424,8 +430,10 @@ organised as:
 - **Dragging selects text but nothing gets highlighted.** Make sure a tool is
   **armed** (its button is accent-coloured). Click the highlighter or underline
   button first.
-- **An annotation disappeared after I edited the note.** If the exact text it
-  anchored to was changed or removed, it can no longer be located. Increase
+- **An annotation disappeared after I edited the note.** Editing the annotated
+  sentence now *re-anchors* it automatically, as long as either its surrounding
+  context or its first and last words still survive. If you replaced the whole
+  passage — anchors and all — there is nothing left to latch onto; increase
   "Context length" for more resilience, or re-create the annotation.
 - **An annotation jumped to a different copy of the same phrase.** Very repetitive
   text with little surrounding context is ambiguous; select a slightly longer
@@ -439,8 +447,9 @@ organised as:
 
 ## Known limitations
 
-- Annotations are anchored to **text**, so heavy edits to the exact annotated
-  span can orphan an annotation.
+- Annotations are anchored to **text** and re-anchor automatically when the
+  annotated sentence is edited, but replacing a passage together with all of its
+  surrounding context can still orphan an annotation.
 - Selection boundaries that fall on element edges (rather than inside text) are
   snapped to the nearest text position; this is robust in practice but not
   pixel-exact in every theme.
