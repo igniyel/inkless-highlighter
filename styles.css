@@ -423,3 +423,34 @@ body.rhl-tool-eraser .rhl:hover {
     height: 32px;
   }
 }
+
+.rhl-orphans {
+  position: fixed;
+  right: 16px;
+  top: 96px;
+  z-index: 9999;
+  max-width: 320px;
+  max-height: 50vh;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  color: var(--text-normal);
+}
+
+.rhl-orphans-title {
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.rhl-orphan {
+  cursor: pointer;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+  font-size: 12px;
+}

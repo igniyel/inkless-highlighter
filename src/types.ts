@@ -74,6 +74,11 @@ export interface HighlightRecord {
    */
   occurrence: number;
 
+  /** Structural paragraph index captured at creation for relocation fallback. */
+  paragraphIndex?: number;
+  /** Nearest heading index captured at creation for relocation fallback. */
+  headingIndex?: number;
+
   /** Epoch milliseconds of creation. */
   createdAt: number;
   /** Optional free-text note (reserved for future annotation UI). */
@@ -192,6 +197,9 @@ export interface StoredAnnotation extends HighlightRecord {
   fieldVersions: Record<string, FieldVersion>;
   updatedAt: number;
   deletedAt?: number;
+  tombstoneUntil?: number;
+  compressedPrefix?: string;
+  compressedSuffix?: string;
   confidence?: number;
 }
 

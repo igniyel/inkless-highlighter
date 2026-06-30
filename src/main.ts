@@ -83,6 +83,8 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   private lastCaptureAt = 0;
   private lastSyncTimestamp = 0;
   private syncTimer: number | null = null;
+  private lazyObserver: IntersectionObserver | null = null;
+  private orphanPanel: HTMLElement | null = null;
 
   /**
    * In-memory undo/redo history, one stack pair per file. Not persisted: it is
@@ -110,8 +112,18 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
 
     this.toolbar = new Toolbar(this);
 
+    this.lazyObserver = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        this.lazyObserver?.unobserve(entry.target);
+        const target = entry.target as HTMLElement & { rhlLazyApply?: () => void };
+        target.rhlLazyApply?.();
+      }
+    }, { rootMargin: "600px 0px" });
+
     // Re-apply annotations on every render.
     this.registerMarkdownPostProcessor((el, ctx) => this.postProcess(el, ctx));
+    this.registerDomEvent(document, "rhl-orphan" as keyof DocumentEventMap, (ev) => this.showOrphan(ev as CustomEvent), true);
 
     // Create annotations from a drag-selection (Reading view only).
     this.registerDomEvent(document, "pointerup", (ev) => this.onPointerUp(ev));
@@ -171,6 +183,8 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     await this.writeSyncSnapshot();
     dismissPopovers();
     this.setBodyState(null);
+    this.lazyObserver?.disconnect();
+    this.orphanPanel?.remove();
     this.toolbar?.destroy();
     await this.store?.persistNow();
   }
@@ -392,7 +406,13 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
       h = { undo: [], redo: [] };
       this.history.set(path, h);
     }
-    h.undo.push({ groupId, before, after });
+    const previous = h.undo[h.undo.length - 1];
+    const sameAdjacentGroup = previous?.groupId === groupId && Date.now() - (after[0]?.createdAt ?? Date.now()) < 24 * 60 * 60 * 1000;
+    if (previous && sameAdjacentGroup) {
+      previous.after = after;
+    } else {
+      h.undo.push({ groupId, before, after });
+    }
     // Cap the per-file history; oldest steps fall off the back.
     if (h.undo.length > ReadingHighlighterPlugin.MAX_HISTORY) h.undo.shift();
     // A fresh action invalidates any redo branch.
@@ -482,7 +502,13 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     const inLivePreview = !!el.closest(".markdown-source-view");
     if (inLivePreview && !this.settings.applyInLivePreview) return;
 
-    applyToContainer(el, records, this.settings);
+    const apply = () => applyToContainer(el, records, this.settings);
+    if (this.lazyObserver && !isInViewport(el)) {
+      (el as HTMLElement & { rhlLazyApply?: () => void }).rhlLazyApply = apply;
+      this.lazyObserver.observe(el);
+      return;
+    }
+    apply();
   }
 
   /* ------------------------------------------------------------------ */
@@ -528,6 +554,8 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
       prefix: part.prefix,
       suffix: part.suffix,
       occurrence: part.occurrence,
+      paragraphIndex: part.paragraphIndex,
+      headingIndex: part.headingIndex,
       createdAt: now,
     }));
 
@@ -745,6 +773,20 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   /* ------------------------------------------------------------------ */
 
 
+
+  private showOrphan(ev: CustomEvent): void {
+    const rec = (ev.detail as { record?: HighlightRecord }).record;
+    if (!rec) return;
+    if (!this.orphanPanel) {
+      this.orphanPanel = document.body.createDiv({ cls: "rhl-orphans" });
+      this.orphanPanel.createDiv({ text: "Orphaned annotations", cls: "rhl-orphans-title" });
+    }
+    if (this.orphanPanel.querySelector(`[data-rhl-orphan="${cssEscape(rec.id)}"]`)) return;
+    const item = this.orphanPanel.createDiv({ cls: "rhl-orphan", attr: { "data-rhl-orphan": rec.id } });
+    item.createSpan({ text: rec.exact.slice(0, 120) });
+    item.onclick = () => new Notice("Open the note and reselect text to repair this orphaned annotation.");
+  }
+
   private scheduleSyncExport(): void {
     if (this.syncTimer !== null) window.clearTimeout(this.syncTimer);
     this.syncTimer = window.setTimeout(() => {
@@ -768,8 +810,24 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
         await adapter.writeBinary(path, copy.buffer);
       }
       else await adapter.write?.(path, bytesToBase64(payload));
+      await this.cleanupOldSyncFiles();
     } catch {
       // Sync export is opportunistic; WAL/IndexedDB remain authoritative locally.
+    }
+  }
+
+
+  private async cleanupOldSyncFiles(): Promise<void> {
+    const adapter = this.app.vault.adapter as unknown as { list?: (path: string) => Promise<{ files: string[] }>; remove?: (path: string) => Promise<void> };
+    try {
+      const files = (await adapter.list?.(".rhl-sync"))?.files ?? [];
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      await Promise.all(files.filter((path) => {
+        const match = path.match(/-(\d+)\.rhl-sync$/);
+        return match ? Number(match[1]) < cutoff : false;
+      }).map((path) => adapter.remove?.(path)));
+    } catch {
+      // Cleanup is best-effort; old sync payloads are harmless and self-contained.
     }
   }
 
@@ -869,4 +927,10 @@ function base64ToBytes(value: string): Uint8Array {
   const out = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
   return out;
+}
+
+function isInViewport(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  const h = window.innerHeight || document.documentElement.clientHeight;
+  return rect.bottom >= -600 && rect.top <= h + 600;
 }

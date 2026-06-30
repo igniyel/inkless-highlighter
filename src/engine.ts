@@ -20,7 +20,7 @@ import {
   CLS_WRAPPER,
   SKIP_TAGS,
 } from "./constants";
-import { SimHashEngine } from "./production";
+import { MatchingPipeline, SimHashEngine } from "./production";
 import type { HighlightRecord, PluginSettings, StoredAnnotation } from "./types";
 
 /** Block-level elements we treat as anchoring units. */
@@ -36,6 +36,8 @@ export interface CapturePart {
   prefix: string;
   suffix: string;
   occurrence: number;
+  paragraphIndex?: number;
+  headingIndex?: number;
 }
 
 interface TextPiece {
@@ -429,7 +431,10 @@ function findFuzzy(
     includeRight = true;
   }
 
-  if (!left || !right) return null;
+  if (!left || !right) {
+    const structural = (rec as StoredAnnotation).simhash ? MatchingPipeline.match(norm, rec as StoredAnnotation, rec.paragraphIndex ?? 0) : null;
+    return structural && structural.confidence >= 0.2 ? { s: structural.start, e: structural.end, confidence: structural.confidence } : null;
+  }
   const hit = bracketBetween(norm, left, right, includeLeft, includeRight, targetLen, maxSpan);
   if (!hit) return null;
 
@@ -581,7 +586,9 @@ export function wrapRange(
       const parent = target.parentNode;
       if (!parent) continue;
       const w = makeWrapper();
-      parent.insertBefore(w, target);
+      const fragment = document.createDocumentFragment();
+      fragment.appendChild(w);
+      parent.insertBefore(fragment, target);
       w.appendChild(target);
       wrapped++;
     } catch {
@@ -632,6 +639,16 @@ function leafBlocksInRange(range: Range, root: HTMLElement): HTMLElement[] {
   return b ? [b] : [];
 }
 
+function structuralPosition(block: HTMLElement): { paragraphIndex: number; headingIndex: number } {
+  const root = block.closest(".markdown-preview-section, .markdown-reading-view, .markdown-preview-view") ?? block.parentElement;
+  const blocks = root ? Array.from(root.querySelectorAll<HTMLElement>(BLOCK_SELECTOR)) : [block];
+  const headings = root ? Array.from(root.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")) : [];
+  return {
+    paragraphIndex: Math.max(0, blocks.indexOf(block)),
+    headingIndex: headings.filter((heading) => heading.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).length,
+  };
+}
+
 function buildPart(
   block: HTMLElement,
   rawStart: number,
@@ -655,7 +672,7 @@ function buildPart(
     occurrence++;
     idx = norm.indexOf(exact, idx + 1);
   }
-  return { block, rawStart, rawEnd, exact, prefix, suffix, occurrence };
+  return { block, rawStart, rawEnd, exact, prefix, suffix, occurrence, ...structuralPosition(block) };
 }
 
 /**
@@ -754,7 +771,10 @@ export function applyToContainer(
     if (!text) break;
     const { norm, map } = buildNorm(text);
     const hit = findInNorm(norm, rec);
-    if (!hit || hit.confidence < 0.2) continue;
+    if (!hit || hit.confidence < 0.2) {
+      container.dispatchEvent(new CustomEvent("rhl-orphan", { bubbles: true, detail: { record: rec } }));
+      continue;
+    }
     (rec as StoredAnnotation).confidence = hit.confidence;
     const rawStart = map[hit.s];
     const rawEnd = hit.e - 1 >= 0 ? map[hit.e - 1] + 1 : rawStart;
