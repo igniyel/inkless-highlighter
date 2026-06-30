@@ -74,9 +74,9 @@ This is the exact flow the plugin implements.
 
    *On a computer*, each tool button responds to two clicks:
    - **Left-click** opens that tool's **palette popover** — where you pick a
-     colour and set everything (opacity for the highlighter; thickness and line
-     style for the underline; neon glow for either) — and arms the tool at the
-     same time.
+     colour and set everything (opacity and a neon glow for the highlighter;
+     thickness, line style, and a brighter line for the underline) — and arms
+     the tool at the same time.
    - **Right-click** *only selects* the tool (arms it) without opening the
      popover. Right-click an already-selected tool to deselect it.
 
@@ -99,11 +99,12 @@ This is the exact flow the plugin implements.
 4. **Adjust parameters any time.** Re-open a tool's palette popover whenever it
    is already armed — left-click it (computer) or long-press it (touch); this
    does **not** disarm it. In the popover:
-   - **Highlighter:** choose a colour and set **opacity**.
-   - **Underline:** choose a colour and set **thickness** and **line style**
-     (solid / dashed / dotted / wavy).
-   - **Both:** toggle a **neon glow**, and add a new named colour from the
-     dashed **“+” tile** at the end of the palette.
+   - **Highlighter:** choose a colour, set **opacity**, and toggle a **neon
+     glow**.
+   - **Underline:** choose a colour, set **thickness** and **line style**
+     (solid / dashed / dotted / wavy), and toggle a **brighter** line.
+   - **Both:** add a new named colour from the dashed **“+” tile** at the end of
+     the palette.
    A live preview shows the result.
 
 5. **Manage an existing annotation.** With no tool armed, click any highlight or
@@ -113,8 +114,16 @@ This is the exact flow the plugin implements.
 6. **Erase quickly.** Click the eraser button, then click annotations to remove
    them. Click "stop" (the cursor icon) to disarm everything.
 
-7. **Move the toolbar.** Drag the grip handle to reposition it; the position is
-   remembered. "Reset toolbar position" in settings snaps it back to its corner.
+7. **Undo and redo.** In Reading view, `Ctrl/Cmd+Z` undoes your last annotation
+   change — so pressing it straight after annotating removes what you just
+   added — and `Ctrl/Cmd+Shift+Z` redoes it. History is per note, covers the
+   last 50 changes, and starts fresh each time you open the note's tab. Optional
+   undo/redo toolbar buttons can be enabled in settings.
+
+8. **Move the toolbar.** Drag the grip handle to reposition it; the position is
+   remembered **per device** (it is never synced to your other devices, so a
+   spot that suits your phone never displaces the toolbar on your desktop).
+   "Reset toolbar position" in settings snaps it back to its corner.
 
 On a computer, a click on a tool icon reaches every parameter and a right-click
 is the quick "just select it" gesture (the two can be swapped in settings). On
@@ -163,16 +172,26 @@ On every render the engine:
 2. Builds a whitespace-normalised copy of that text **plus a map back to the raw
    character offsets**, so a match in normalised space can be translated to real
    DOM positions.
-3. Finds every position of `exact`. If there is exactly one, it wins. If there
-   are several, each candidate is scored by how much of its surrounding text
-   matches the stored `prefix`/`suffix`, with `occurrence` breaking ties.
-4. Wraps the matching characters by **splitting and wrapping the existing text
+3. Finds every position of `exact` and keeps the one whose surrounding text best
+   matches the stored `prefix`/`suffix` (with `occurrence` breaking ties) — but
+   **only if that context is convincing**. A bare repeat of the same words in a
+   different place, with different surroundings, is deliberately left untouched.
+   This matters because Obsidian renders Reading view section by section, so
+   without the context check the same record would be re-applied to every
+   section that merely repeats its words.
+4. **If `exact` is gone** — because you edited the annotated sentence — it
+   *re-anchors* instead of giving up: it brackets the annotation between the
+   strongest anchor on each side (the stored context, or the selection's own
+   first / last word) and re-applies to whatever text now sits between them.
+   The candidate span is length-bounded so a stray match can't engulf the page.
+5. Wraps the matching characters by **splitting and wrapping the existing text
    nodes** — never by injecting HTML. A selection that crosses inline elements
    (bold, links, etc.) yields several adjacent wrappers that share one id.
 
-Because matching is text-based, an annotation keeps working when the surrounding
-note is edited moderately, when the note is re-rendered lazily as you scroll, or
-when it is viewed on another device.
+Because matching is text-based and self-healing, an annotation keeps working
+when you reword the sentence it covers, when the surrounding note is edited, when
+the note is re-rendered lazily as you scroll, or when it is viewed on another
+device.
 
 ### Capturing a selection
 
@@ -207,7 +226,8 @@ settings; on touch, tap selects and long-press opens the options.)
 - **Highlighter:** opacity slider (10–100%).
 - **Underline:** thickness slider (1–5 px) and a style dropdown
   (solid / dashed / dotted / wavy).
-- **Neon glow** toggle for either tool.
+- A **neon glow** toggle for the highlighter, or a **brighter** toggle for the
+  underline.
 - A live preview of the current settings.
 
 ### Annotation popover (click an annotation with no tool armed)
@@ -223,6 +243,8 @@ settings; on touch, tap selects and long-press opens the options.)
 - **Toggle underline**
 - **Cycle to next colour** (of the current tool)
 - **Stop annotating**
+- **Undo last annotation change** (Reading view: `Ctrl/Cmd+Z`)
+- **Redo annotation change** (Reading view: `Ctrl/Cmd+Shift+Z`)
 - **Erase last annotation in note**
 - **Copy note's annotations as Markdown**
 - **Open highlighter settings**
@@ -250,7 +272,8 @@ settings; on touch, tap selects and long-press opens the options.)
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Default highlight opacity | 40% | Starting strength for new highlights. |
-| Neon glow | Off | Wrap new annotations in a luminous halo of their colour. |
+| Neon glow on highlights | Off | Wrap new highlights in a luminous halo of their colour. |
+| Brighter underlines | Off | Draw new underlines in a more vivid version of their colour (line only). |
 | Default underline thickness | 2 px | Line thickness for new underlines. |
 | Default underline style | Solid | Line style for new underlines. |
 | Default underline offset | 3 px | Gap between baseline and underline. |
@@ -262,9 +285,10 @@ settings; on touch, tap selects and long-press opens the options.)
 | --- | --- | --- |
 | Swap left/right click on tool buttons | Off | Off: left-click opens the palette, right-click selects. On: swap them. |
 | Show toolbar in Reading view | On | Hide it entirely if you prefer commands. |
-| Toolbar corner | Bottom right | Where it docks before you drag it. |
-| Reset toolbar position | — | Clears any manual drag offset. |
+| Toolbar corner | Bottom right | Where it docks before you drag it (remembered per device). |
+| Reset toolbar position | — | Clears this device's manual drag offset. |
 | Show eraser button | On | Show/hide the eraser. |
+| Show undo/redo buttons | Off | Show undo and redo buttons in the toolbar (the shortcuts work either way). |
 | Show settings button | On | Show/hide the gear. |
 
 ### Colour palette
@@ -297,8 +321,11 @@ appearance is snapshotted).
   as first-class blocks and can be annotated.
 - **Code.** Skipped by default (configurable). Inline and fenced code are never
   wrapped, and their text is excluded from matching so offsets stay correct.
-- **Duplicate text in a block** (e.g. the word "set" twice). Disambiguated by
-  the stored prefix/suffix context and the occurrence index.
+- **Duplicate text in the note** (e.g. the word "set" in several places).
+  Disambiguated by the stored prefix/suffix context and the occurrence index:
+  the annotation sticks to the one place whose surroundings match, and other
+  copies of the same words — in the same block or any other section — are left
+  untouched.
 - **Lazy rendering of long notes.** Obsidian renders Reading view in sections as
   you scroll; the post-processor runs per section, so annotations appear as
   their text scrolls into view.
@@ -356,7 +383,8 @@ appearance is snapshotted).
 - **Desktop and mobile:** both. Touch drag-to-select works in Reading view; on
   phones and iPad the toolbar uses larger targets, a **tap** selects a tool and
   a **long-press** opens its options. The toolbar is kept on-screen when the
-  device rotates or the window resizes.
+  device rotates or the window resizes, and its position is stored **per device**
+  so cloud sync never moves it on your other machines.
 - **Themes:** the UI is built entirely from Obsidian theme variables, so it
   adapts to light, dark, and community themes automatically.
 
@@ -418,12 +446,16 @@ organised as:
 - **Dragging selects text but nothing gets highlighted.** Make sure a tool is
   **armed** (its button is accent-coloured). Click the highlighter or underline
   button first.
-- **An annotation disappeared after I edited the note.** If the exact text it
-  anchored to was changed or removed, it can no longer be located. Increase
+- **An annotation disappeared after I edited the note.** Editing the annotated
+  sentence now *re-anchors* it automatically, as long as either its surrounding
+  context or its first and last words still survive. If you replaced the whole
+  passage — anchors and all — there is nothing left to latch onto; increase
   "Context length" for more resilience, or re-create the annotation.
-- **An annotation jumped to a different copy of the same phrase.** Very repetitive
-  text with little surrounding context is ambiguous; select a slightly longer
-  phrase, or increase "Context length".
+- **An annotation jumped to, or duplicated onto, a different copy of the same
+  words.** This is prevented: a match is only applied where the surrounding
+  context agrees. If a genuine annotation ever fails to appear because its
+  context was heavily edited on both sides, increase "Context length" or
+  re-create it.
 - **Highlights look too faint on my dark theme.** Raise the opacity or turn on
   "High-contrast outline".
 - **I want the highlights inside the note itself.** Use **Copy note's
@@ -433,8 +465,9 @@ organised as:
 
 ## Known limitations
 
-- Annotations are anchored to **text**, so heavy edits to the exact annotated
-  span can orphan an annotation.
+- Annotations are anchored to **text** and re-anchor automatically when the
+  annotated sentence is edited, but replacing a passage together with all of its
+  surrounding context can still orphan an annotation.
 - Selection boundaries that fall on element edges (rather than inside text) are
   snapped to the nearest text position; this is robust in practice but not
   pixel-exact in every theme.
@@ -470,8 +503,9 @@ Stored via Obsidian's `saveData` in the plugin's `data.json`:
         "groupId": "…",
         "type": "highlight",        // or "underline"
         "colorId": "c-yellow",
-        "color": "#ffd54f",
+        "color": "#ffe14d",
         "opacity": 0.4,
+        "neon": false,             // neon glow (highlight) / brighter (underline)
         "underline": { "thickness": 2, "style": "solid", "offset": 3 },
         "exact": "the selected text",
         "prefix": "context before",
