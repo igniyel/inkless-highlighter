@@ -114,7 +114,13 @@ This is the exact flow the plugin implements.
 6. **Erase quickly.** Click the eraser button, then click annotations to remove
    them. Click "stop" (the cursor icon) to disarm everything.
 
-7. **Move the toolbar.** Drag the grip handle to reposition it; the position is
+7. **Undo and redo.** In Reading view, `Ctrl/Cmd+Z` undoes your last annotation
+   change — so pressing it straight after annotating removes what you just
+   added — and `Ctrl/Cmd+Shift+Z` redoes it. History is per note, covers the
+   last 50 changes, and starts fresh each time you open the note's tab. Optional
+   undo/redo toolbar buttons can be enabled in settings.
+
+8. **Move the toolbar.** Drag the grip handle to reposition it; the position is
    remembered **per device** (it is never synced to your other devices, so a
    spot that suits your phone never displaces the toolbar on your desktop).
    "Reset toolbar position" in settings snaps it back to its corner.
@@ -233,6 +239,8 @@ settings; on touch, tap selects and long-press opens the options.)
 - **Toggle underline**
 - **Cycle to next colour** (of the current tool)
 - **Stop annotating**
+- **Undo last annotation change** (Reading view: `Ctrl/Cmd+Z`)
+- **Redo annotation change** (Reading view: `Ctrl/Cmd+Shift+Z`)
 - **Erase last annotation in note**
 - **Copy note's annotations as Markdown**
 - **Open highlighter settings**
@@ -276,6 +284,7 @@ settings; on touch, tap selects and long-press opens the options.)
 | Toolbar corner | Bottom right | Where it docks before you drag it (remembered per device). |
 | Reset toolbar position | — | Clears this device's manual drag offset. |
 | Show eraser button | On | Show/hide the eraser. |
+| Show undo/redo buttons | Off | Show undo and redo buttons in the toolbar (the shortcuts work either way). |
 | Show settings button | On | Show/hide the gear. |
 
 ### Colour palette

@@ -56,6 +56,7 @@ export function defaultSettings(): PluginSettings {
 
     showToolbar: true,
     showEraser: true,
+    showUndoRedo: false,
     showSettingsButton: true,
 
     highContrast: false,

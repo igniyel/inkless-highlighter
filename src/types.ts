@@ -150,6 +150,8 @@ export interface PluginSettings {
   showToolbar: boolean;
   /** Show the eraser button in the toolbar. */
   showEraser: boolean;
+  /** Show undo and redo buttons in the toolbar. */
+  showUndoRedo: boolean;
   /** Show the settings (gear) button in the toolbar. */
   showSettingsButton: boolean;
 

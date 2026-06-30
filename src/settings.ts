@@ -350,6 +350,21 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
       );
 
     new Setting(root)
+      .setName("Show undo/redo buttons")
+      .setDesc(
+        "Add undo and redo buttons to the toolbar. Either way, in Reading view " +
+          "you can undo with Ctrl/Cmd+Z and redo with Ctrl/Cmd+Shift+Z. History " +
+          "covers the last 50 changes per note and starts fresh each time a note is opened.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.showUndoRedo).onChange(async (v) => {
+          this.plugin.settings.showUndoRedo = v;
+          await this.plugin.persistSettings();
+          this.plugin.rebuildToolbar();
+        }),
+      );
+
+    new Setting(root)
       .setName("Show settings button")
       .setDesc("Show a gear in the toolbar that opens this settings page.")
       .addToggle((t) =>

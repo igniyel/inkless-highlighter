@@ -59,6 +59,18 @@ interface Rerenderable {
   rerender?(full?: boolean): void;
 }
 
+/**
+ * One reversible change to a single annotation group, expressed as the group's
+ * full record set before and after. An empty array means "the group did not
+ * exist" — so creation is `before: []`, deletion is `after: []`, and an edit
+ * (recolour / convert) carries both states.
+ */
+interface HistoryOp {
+  groupId: string;
+  before: HighlightRecord[];
+  after: HighlightRecord[];
+}
+
 export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   store!: HighlightStore;
   /** Same object reference as store.settings, so edits propagate both ways. */
@@ -69,6 +81,16 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   private activeTool: ActiveTool = null;
   /** Timestamp of the last successful capture, to swallow the trailing click. */
   private lastCaptureAt = 0;
+
+  /**
+   * In-memory undo/redo history, one stack pair per file. Not persisted: it is
+   * renewed whenever a note's tab is (re)opened, and capped per file.
+   */
+  private history = new Map<string, { undo: HistoryOp[]; redo: HistoryOp[] }>();
+  /** Set while undo/redo is replaying, so the replay itself isn't recorded. */
+  private applyingHistory = false;
+  /** Most undoable steps kept per file. */
+  private static readonly MAX_HISTORY = 50;
 
   /* ------------------------------------------------------------------ */
   /* Lifecycle                                                           */
@@ -93,6 +115,16 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
 
     // Manage / erase annotations on click.
     this.registerDomEvent(document, "click", (ev) => this.onClick(ev), true);
+
+    // Undo / redo the most recent annotation changes (Reading view only).
+    this.registerDomEvent(document, "keydown", (ev) => this.onKeyDown(ev), true);
+
+    // Renew a note's undo history whenever its tab is opened.
+    this.registerEvent(
+      this.app.workspace.on("file-open", (file) => {
+        if (file instanceof TFile) this.history.delete(file.path);
+      }),
+    );
 
     // Toolbar visibility tracks the active leaf's mode.
     this.registerEvent(
@@ -236,10 +268,12 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     if (!path || !groupId || !id) return;
     const rec = this.store.findById(path, id);
     if (!rec) return;
+    const before = this.snapshotGroup(path, groupId);
     const color = this.resolveColor(colorId);
     this.store.updateGroup(path, groupId, { colorId, color });
     const root = this.rootFor(el);
     restyleGroup(root, groupId, { ...rec, colorId, color }, this.settings);
+    this.recordHistory(path, groupId, before, this.snapshotGroup(path, groupId));
   }
 
   switchAnnotationType(el: HTMLElement): void {
@@ -249,6 +283,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     if (!path || !groupId || !id) return;
     const rec = this.store.findById(path, id);
     if (!rec) return;
+    const before = this.snapshotGroup(path, groupId);
     const nextType: ToolType = rec.type === "highlight" ? "underline" : "highlight";
     const patch: Partial<HighlightRecord> = { type: nextType };
     if (nextType === "underline" && !rec.underline) {
@@ -257,6 +292,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     this.store.updateGroup(path, groupId, patch);
     const root = this.rootFor(el);
     restyleGroup(root, groupId, { ...rec, ...patch }, this.settings);
+    this.recordHistory(path, groupId, before, this.snapshotGroup(path, groupId));
   }
 
   deleteAnnotationEl(el: HTMLElement): void {
@@ -266,6 +302,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     if (this.settings.confirmDelete && !confirm("Delete this annotation?")) return;
     const removed = this.store.removeGroup(path, groupId);
     removed.forEach((r) => unwrapById(document, r.id));
+    if (removed.length) this.recordHistory(path, groupId, cloneRecords(removed), []);
   }
 
   copyAnnotationText(el: HTMLElement): void {
@@ -276,6 +313,99 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     ).map((n) => n.textContent ?? "");
     const text = parts.join(" ").replace(/\s+/g, " ").trim();
     void this.copyToClipboard(text, "Copied annotation text.");
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Undo / redo                                                         */
+  /* ------------------------------------------------------------------ */
+
+  canUndo(): boolean {
+    const path = this.activeFilePath();
+    return !!path && (this.history.get(path)?.undo.length ?? 0) > 0;
+  }
+
+  canRedo(): boolean {
+    const path = this.activeFilePath();
+    return !!path && (this.history.get(path)?.redo.length ?? 0) > 0;
+  }
+
+  undo(): void {
+    const path = this.activeFilePath();
+    if (!path) return;
+    const h = this.history.get(path);
+    if (!h || h.undo.length === 0) {
+      new Notice("Nothing to undo.");
+      return;
+    }
+    const op = h.undo.pop() as HistoryOp;
+    this.applyingHistory = true;
+    this.applyGroupState(path, op.groupId, op.before);
+    this.applyingHistory = false;
+    h.redo.push(op);
+    this.toolbar?.render();
+  }
+
+  redo(): void {
+    const path = this.activeFilePath();
+    if (!path) return;
+    const h = this.history.get(path);
+    if (!h || h.redo.length === 0) {
+      new Notice("Nothing to redo.");
+      return;
+    }
+    const op = h.redo.pop() as HistoryOp;
+    this.applyingHistory = true;
+    this.applyGroupState(path, op.groupId, op.after);
+    this.applyingHistory = false;
+    h.undo.push(op);
+    this.toolbar?.render();
+  }
+
+  /** Record one undoable step (skipped while a replay is in progress). */
+  private recordHistory(
+    path: string,
+    groupId: string,
+    before: HighlightRecord[],
+    after: HighlightRecord[],
+  ): void {
+    if (this.applyingHistory) return;
+    let h = this.history.get(path);
+    if (!h) {
+      h = { undo: [], redo: [] };
+      this.history.set(path, h);
+    }
+    h.undo.push({ groupId, before, after });
+    // Cap the per-file history; oldest steps fall off the back.
+    if (h.undo.length > ReadingHighlighterPlugin.MAX_HISTORY) h.undo.shift();
+    // A fresh action invalidates any redo branch.
+    h.redo.length = 0;
+    this.toolbar?.render();
+  }
+
+  /** Deep copy of all records currently in a group, for a history snapshot. */
+  private snapshotGroup(path: string, groupId: string): HighlightRecord[] {
+    return cloneRecords(this.store.getForFile(path).filter((r) => r.groupId === groupId));
+  }
+
+  /**
+   * Force a group into a given set of records: removes whatever is there now
+   * (store + DOM) and, if `target` is non-empty, re-adds and re-renders it.
+   */
+  private applyGroupState(path: string, groupId: string, target: HighlightRecord[]): void {
+    const removed = this.store.removeGroup(path, groupId);
+    removed.forEach((r) => unwrapById(document, r.id));
+    if (target.length === 0) return;
+    const copy = cloneRecords(target);
+    this.store.add(path, copy);
+    this.renderRecordsInActiveView(path, copy);
+  }
+
+  /** Paint a set of records into the active note's Reading view, if it is open. */
+  private renderRecordsInActiveView(path: string, records: HighlightRecord[]): void {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view || view.file?.path !== path) return;
+    const root = view.containerEl.querySelector(READING_VIEW_SELECTOR) as HTMLElement | null;
+    if (root) applyToContainer(root, records, this.settings);
   }
 
   /* ------------------------------------------------------------------ */
@@ -388,6 +518,9 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     // Instant feedback: wrap the live DOM now (post-processor will skip dupes).
     parts.forEach((part, i) => applyPartLive(part, records[i], this.settings));
 
+    // Make this annotation undoable.
+    this.recordHistory(path, groupId, [], cloneRecords(records));
+
     this.lastCaptureAt = now;
     if (this.settings.clearSelectionAfter) sel.removeAllRanges();
     if (!this.settings.stickyTool) this.setActiveTool(null);
@@ -424,6 +557,32 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     openAnnotationPopover(this, wrapper);
   }
 
+  /**
+   * Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z redoes — but only in Reading view,
+   * where there is no editor undo to clash with, and never while typing in an
+   * input field.
+   */
+  private onKeyDown(ev: KeyboardEvent): void {
+    if (ev.key.toLowerCase() !== "z" || ev.altKey) return;
+    if (!(ev.ctrlKey || ev.metaKey)) return;
+
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view || view.getMode() !== "preview") return;
+
+    const target = ev.target as HTMLElement | null;
+    if (
+      target &&
+      (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+    ) {
+      return;
+    }
+
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.shiftKey) this.redo();
+    else this.undo();
+  }
+
   /* ------------------------------------------------------------------ */
   /* Commands (registered without default hotkeys)                      */
   /* ------------------------------------------------------------------ */
@@ -450,6 +609,24 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
       id: "stop-annotating",
       name: "Stop annotating",
       callback: () => this.setActiveTool(null),
+    });
+    this.addCommand({
+      id: "undo-annotation",
+      name: "Undo last annotation change",
+      checkCallback: (checking: boolean) => {
+        if (checking) return this.canUndo();
+        this.undo();
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "redo-annotation",
+      name: "Redo annotation change",
+      checkCallback: (checking: boolean) => {
+        if (checking) return this.canRedo();
+        this.redo();
+        return true;
+      },
     });
     this.addCommand({
       id: "erase-last",
@@ -502,8 +679,10 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     }
     let latest = list[0];
     for (const r of list) if (r.createdAt > latest.createdAt) latest = r;
-    const removed = this.store.removeGroup(path, latest.groupId);
+    const groupId = latest.groupId;
+    const removed = this.store.removeGroup(path, groupId);
     removed.forEach((r) => unwrapById(document, r.id));
+    if (removed.length) this.recordHistory(path, groupId, cloneRecords(removed), []);
     new Notice("Removed last annotation.");
   }
 
@@ -552,6 +731,8 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     const visible = !!view && view.getMode() === "preview";
     this.toolbar.setVisible(visible);
+    // Refresh undo/redo enablement for the now-active note.
+    this.toolbar.render();
   }
 
   private activeFilePath(): string | null {
@@ -589,6 +770,14 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
 
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+/** Deep copy a list of records so history snapshots can't alias live records. */
+function cloneRecords(records: HighlightRecord[]): HighlightRecord[] {
+  return records.map((r) => ({
+    ...r,
+    underline: r.underline ? { ...r.underline } : undefined,
+  }));
 }
 
 function readingRootOf(node: Node | null): HTMLElement | null {

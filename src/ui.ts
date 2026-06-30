@@ -40,6 +40,12 @@ export interface UIHost {
   /** Persist the toolbar placement for this device. */
   saveToolbarPlacement(): void;
 
+  /** Undo / redo the most recent annotation changes in the active note. */
+  undo(): void;
+  redo(): void;
+  canUndo(): boolean;
+  canRedo(): boolean;
+
   /** Management actions, operating on a clicked wrapper element. */
   recolorAnnotation(el: HTMLElement, colorId: string): void;
   switchAnnotationType(el: HTMLElement): void;
@@ -58,6 +64,8 @@ const ICONS = {
   copy: "copy",
   swap: "arrow-left-right",
   add: "plus",
+  undo: "undo-2",
+  redo: "redo-2",
 };
 
 /** How long a press must be held (ms) before it counts as a long-press. */
@@ -185,6 +193,18 @@ export class Toolbar {
           this.host.setActiveTool(next);
         },
       );
+    }
+    if (this.host.settings.showUndoRedo) {
+      const mod = Platform.isMacOS ? "Cmd" : "Ctrl";
+      const hint = isTouch() ? "" : ` (${mod}+Z)`;
+      this.addButton("undo", ICONS.undo, `Undo last annotation change${hint}`, () => {
+        closeCurrentPopover();
+        this.host.undo();
+      });
+      this.addButton("redo", ICONS.redo, `Redo annotation change${isTouch() ? "" : ` (${mod}+Shift+Z)`}`, () => {
+        closeCurrentPopover();
+        this.host.redo();
+      });
     }
     this.addButton("cursor", ICONS.cursor, "Stop annotating", () => {
       closeCurrentPopover();
@@ -407,6 +427,11 @@ export class Toolbar {
       const bar = btn?.querySelector<HTMLElement>(".rhl-colorbar");
       if (bar) bar.style.backgroundColor = this.host.resolveColor(this.host.getToolColorId(tool));
     });
+    // Undo / redo enablement reflects the active note's history.
+    const undoBtn = this.buttons.get("undo");
+    if (undoBtn) (undoBtn as HTMLButtonElement).disabled = !this.host.canUndo();
+    const redoBtn = this.buttons.get("redo");
+    if (redoBtn) (redoBtn as HTMLButtonElement).disabled = !this.host.canRedo();
   }
 
   /* ----- placement & dragging ----- */

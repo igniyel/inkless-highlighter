@@ -56,6 +56,16 @@
   color: var(--text-on-accent);
 }
 
+.rhl-tool-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.rhl-tool-btn:disabled:hover {
+  background-color: transparent;
+  color: var(--text-muted);
+}
+
 /* Force the Lucide glyph to render at a predictable size on every platform —
    some mobile themes otherwise collapse an unsized inline SVG to zero. */
 .rhl-tool-btn .svg-icon {
