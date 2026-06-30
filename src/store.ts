@@ -43,26 +43,31 @@ export class HighlightStore {
 
   async init(pluginId: string, vaultName = ""): Promise<void> {
     this.vaultName = vaultName;
-    this.persistence = new PersistenceLayer(pluginId, (data) => this.save({ schema: SCHEMA_VERSION, settings: this.settings, highlights: data.highlights ?? {} } as PersistedData));
-    await this.persistence.open();
-    await this.persistence.putSettings(this.settings);
-    await this.persistence.replayWal();
-    void this.persistence.compactWal();
-    void this.persistence.pruneHistory();
-    const existing = await this.persistence.getAllAnnotations();
-    if (existing.length > 0) {
-      this.highlights = {};
-      for (const rec of existing.filter((r) => !r.deletedAt)) {
-        const list = this.highlights[rec.filePath] ?? (this.highlights[rec.filePath] = []);
-        list.push(rec);
+    this.persistence = new PersistenceLayer(pluginId, (data) => this.save({ schema: SCHEMA_VERSION, settings: this.settings, highlights: data.highlights ?? this.highlights } as PersistedData));
+    try {
+      await this.persistence.open();
+      await this.persistence.putSettings(this.settings);
+      await this.persistence.replayWal();
+      void this.persistence.compactWal();
+      void this.persistence.pruneHistory();
+      const existing = await this.persistence.getAllAnnotations();
+      if (existing.length > 0) {
+        this.highlights = {};
+        for (const rec of existing.filter((r) => !r.deletedAt)) {
+          const list = this.highlights[rec.filePath] ?? (this.highlights[rec.filePath] = []);
+          list.push(rec);
+        }
+        for (const [path, records] of Object.entries(this.highlights)) this.index.setFile(path, records as StoredAnnotation[]);
+        return;
       }
-      for (const [path, records] of Object.entries(this.highlights)) this.index.setFile(path, records as StoredAnnotation[]);
-      return;
+      const batches = Object.entries(this.highlights).map(([path, records]) =>
+        records.map((r) => enrichRecord(r, path, this.deviceId, this.vaultName)),
+      );
+      for (const batch of batches) await this.persistence.putAnnotations(batch);
+    } catch (err) {
+      console.error("Inkless Highlighter persistence backend unavailable", err);
+      this.persistence = null;
     }
-    const batches = Object.entries(this.highlights).map(([path, records]) =>
-      records.map((r) => enrichRecord(r, path, this.deviceId, this.vaultName)),
-    );
-    for (const batch of batches) await this.persistence.putAnnotations(batch);
   }
 
   getDeviceId(): string {
@@ -317,7 +322,7 @@ export class HighlightStore {
   /** Persist immediately (e.g. on unload or after a settings change). */
   async persistNow(): Promise<void> {
     await this.persistence?.putSettings(this.settings);
-    await this.save({ schema: SCHEMA_VERSION, settings: this.settings, highlights: {} });
+    await this.save({ schema: SCHEMA_VERSION, settings: this.settings, highlights: this.persistence ? {} : this.highlights });
   }
 
   /** Schedule a debounced settings+data save. */

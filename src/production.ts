@@ -199,6 +199,7 @@ export class PersistenceLayer {
   async open(): Promise<void> {
     if (typeof indexedDB === "undefined") return;
     this.db = await new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => reject(new Error("IndexedDB open timed out")), 2500);
       const req = indexedDB.open(this.name, 3);
       req.onupgradeneeded = () => {
         const db = req.result;
@@ -219,7 +220,9 @@ export class PersistenceLayer {
         if (!db.objectStoreNames.contains("checkpoints")) db.createObjectStore("checkpoints", { keyPath: "key" });
         for (let i = 0; i < 4; i++) if (!db.objectStoreNames.contains(`annotationShard${i}`)) db.createObjectStore(`annotationShard${i}`, { keyPath: ["filePath", "id"] });
       };
-      req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error);
+      req.onsuccess = () => { window.clearTimeout(timeout); resolve(req.result); };
+      req.onerror = () => { window.clearTimeout(timeout); reject(req.error); };
+      req.onblocked = () => { window.clearTimeout(timeout); reject(new Error("IndexedDB upgrade blocked")); };
     });
   }
   async putSettings(settings: PluginSettings): Promise<void> { await this.put("settings", { key: "global", settings }); await this.fallbackSave({ settings }); }
@@ -359,7 +362,11 @@ export class WorkerBridge {
   constructor() {
     if (typeof Worker === "undefined" || typeof Blob === "undefined") return;
     const source = `self.onmessage=e=>{const s=e.data.text||"";let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)};self.postMessage({id:e.data.id,hash:(h>>>0).toString(16)})}`;
-    this.worker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+    try {
+      this.worker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+    } catch {
+      this.worker = null;
+    }
   }
   fingerprint(text: string): Promise<string> {
     if (!this.worker) return Promise.resolve(SimHashEngine.fingerprint(text));

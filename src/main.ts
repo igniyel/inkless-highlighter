@@ -103,7 +103,6 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   async onload(): Promise<void> {
     const loaded = await this.loadData();
     this.store = new HighlightStore(loaded ?? null, (data) => this.saveData(data));
-    await this.store.init(this.manifest.id, this.app.vault.getName());
     this.settings = this.store.settings;
 
     this.toolbarPlacement = this.loadToolbarPlacement();
@@ -111,6 +110,13 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     this.addSettingTab(new ReadingHighlighterSettingTab(this.app, this));
 
     this.toolbar = new Toolbar(this);
+
+    // Open/migrate the production backend in the background so an IndexedDB
+    // upgrade or browser storage failure cannot prevent the toolbar from
+    // appearing or the plugin from registering its event handlers.
+    void this.store.init(this.manifest.id, this.app.vault.getName()).catch((err) => {
+      console.error("Inkless Highlighter: persistence init failed; using in-memory/data.json fallback", err);
+    });
 
     this.lazyObserver = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver((entries) => {
       for (const entry of entries) {
