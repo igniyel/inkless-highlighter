@@ -1,0 +1,320 @@
+/*
+ * Inkless Highlighter — styles.
+ *
+ * Everything is expressed through Obsidian's theme variables so the plugin
+ * blends into the user's current theme (light, dark, or community) instead of
+ * imposing its own palette. Annotation colours themselves are set inline by the
+ * engine; the rules here only handle structure, states, and affordances.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Floating toolbar                                                    */
+/* ------------------------------------------------------------------ */
+
+.rhl-toolbar {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background-color: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m, 8px);
+  box-shadow: var(--shadow-l, 0 6px 24px rgba(0, 0, 0, 0.25));
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  max-width: calc(100vw - 24px);
+}
+
+.rhl-tool-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-s, 5px);
+  background-color: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  box-shadow: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.rhl-tool-btn:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.rhl-tool-btn.is-active {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.rhl-tool-btn .svg-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.rhl-grip {
+  cursor: grab;
+  color: var(--text-faint);
+}
+
+.rhl-grip:active {
+  cursor: grabbing;
+}
+
+/* Colour indicator under the highlight / underline buttons. */
+.rhl-colorbar {
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  bottom: 3px;
+  height: 3px;
+  border-radius: 2px;
+  background-color: var(--text-faint);
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Popovers (palette + annotation management)                          */
+/* ------------------------------------------------------------------ */
+
+.rhl-popover {
+  position: fixed;
+  z-index: 1001;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 12px;
+  background-color: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m, 8px);
+  box-shadow: var(--shadow-l, 0 8px 30px rgba(0, 0, 0, 0.3));
+}
+
+.rhl-popover-title {
+  font-weight: var(--font-semibold, 600);
+  font-size: var(--font-ui-small, 13px);
+  color: var(--text-normal);
+  margin-bottom: 8px;
+}
+
+.rhl-swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(28px, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.rhl-swatch {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  min-height: 28px;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 5px);
+  cursor: pointer;
+  box-shadow: none;
+  transition: transform 100ms ease, box-shadow 100ms ease;
+}
+
+.rhl-swatch:hover {
+  transform: translateY(-1px);
+}
+
+.rhl-swatch.is-selected {
+  box-shadow: 0 0 0 2px var(--background-primary), 0 0 0 4px var(--interactive-accent);
+}
+
+.rhl-popover-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.rhl-control-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rhl-control-label {
+  flex: 0 0 auto;
+  min-width: 64px;
+  font-size: var(--font-ui-smaller, 12px);
+  color: var(--text-muted);
+}
+
+.rhl-control-row input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.rhl-control-row .dropdown {
+  flex: 1 1 auto;
+}
+
+.rhl-control-value {
+  flex: 0 0 auto;
+  min-width: 36px;
+  text-align: right;
+  font-size: var(--font-ui-smaller, 12px);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.rhl-preview {
+  padding: 8px 10px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--radius-s, 5px);
+  text-align: center;
+  color: var(--text-normal);
+  background-color: var(--background-primary);
+}
+
+.rhl-popover-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rhl-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-s, 5px);
+  background-color: transparent;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small, 13px);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.rhl-action-btn:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.rhl-action-btn .svg-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+}
+
+.rhl-annotation-popover .rhl-swatch-grid {
+  margin-bottom: 8px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Annotation wrappers                                                 */
+/* ------------------------------------------------------------------ */
+
+/* Highlights: rounded background that survives line wraps. */
+.rhl-highlight {
+  border-radius: 0.15em;
+  padding: 0 0.03em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* Underlines: keep descenders legible. */
+.rhl-underline {
+  text-decoration-skip-ink: auto;
+}
+
+/* Discoverability: clickable affordance when no tool is armed. */
+body:not(.rhl-armed) .rhl:hover {
+  box-shadow: 0 0 0 2px var(--background-modifier-border);
+  border-radius: 0.15em;
+  cursor: pointer;
+}
+
+/* Cursor hints while a tool is armed (text selection stays available). */
+body.rhl-tool-highlight .markdown-reading-view,
+body.rhl-tool-highlight .markdown-preview-view,
+body.rhl-tool-underline .markdown-reading-view,
+body.rhl-tool-underline .markdown-preview-view {
+  cursor: text;
+}
+
+/* Eraser: make annotations the obvious target. */
+body.rhl-tool-eraser .rhl {
+  cursor: pointer;
+}
+
+body.rhl-tool-eraser .rhl:hover {
+  outline: 2px solid var(--text-error);
+  outline-offset: 1px;
+  border-radius: 0.15em;
+}
+
+/* ------------------------------------------------------------------ */
+/* Settings tab                                                        */
+/* ------------------------------------------------------------------ */
+
+.rhl-settings-intro {
+  margin-bottom: 12px;
+}
+
+.rhl-settings-intro p,
+.rhl-settings-note {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small, 13px);
+  line-height: 1.5;
+}
+
+.rhl-palette-editor {
+  display: flex;
+  flex-direction: column;
+}
+
+.rhl-palette-row .setting-item-info {
+  display: none;
+}
+
+.rhl-palette-row {
+  padding: 6px 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Focus, motion, and contrast                                         */
+/* ------------------------------------------------------------------ */
+
+.rhl-tool-btn:focus-visible,
+.rhl-swatch:focus-visible,
+.rhl-action-btn:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rhl-tool-btn,
+  .rhl-swatch {
+    transition: none;
+  }
+  .rhl-swatch:hover {
+    transform: none;
+  }
+}
+
+/* Narrow screens: tighten the toolbar so it never overflows. */
+@media (max-width: 480px) {
+  .rhl-toolbar {
+    gap: 1px;
+    padding: 3px;
+  }
+  .rhl-tool-btn {
+    width: 34px;
+    height: 34px;
+  }
+}

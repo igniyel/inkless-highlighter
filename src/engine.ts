@@ -1,0 +1,553 @@
+/**
+ * Engine: turns a Reading-view text selection into a persistent, re-applicable
+ * annotation, and re-applies stored annotations onto freshly rendered Markdown.
+ *
+ * Design: annotations are NON-DESTRUCTIVE. The Markdown file is never rewritten.
+ * Each annotation is anchored with a W3C-style text quote (exact text + a short
+ * prefix/suffix of surrounding context). On every render we search the rendered
+ * text for that quote and wrap the matching characters in styled elements.
+ *
+ * All DOM mutation works by isolating and wrapping existing Text nodes — we
+ * never inject HTML strings, so there is no XSS surface from note content.
+ */
+
+import {
+  ATTR_GROUP,
+  ATTR_ID,
+  ATTR_TYPE,
+  CLS_HIGHLIGHT,
+  CLS_UNDERLINE,
+  CLS_WRAPPER,
+  SKIP_TAGS,
+} from "./constants";
+import type { HighlightRecord, PluginSettings } from "./types";
+
+/** Block-level elements we treat as anchoring units. */
+const BLOCK_SELECTOR =
+  "p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, dd, dt, figcaption, .callout-title-inner";
+
+/** A contiguous run of selected text confined to one block. */
+export interface CapturePart {
+  block: HTMLElement;
+  rawStart: number;
+  rawEnd: number;
+  exact: string;
+  prefix: string;
+  suffix: string;
+  occurrence: number;
+}
+
+interface TextPiece {
+  node: Text;
+  start: number;
+  end: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* Small utilities                                                     */
+/* ------------------------------------------------------------------ */
+
+/** Reasonably unique id without external deps. */
+export function genId(): string {
+  return (
+    Date.now().toString(36) +
+    "-" +
+    Math.random().toString(36).slice(2, 8) +
+    Math.random().toString(36).slice(2, 6)
+  );
+}
+
+/** Collapse internal whitespace and trim — the canonical anchor form. */
+export function normStore(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/** Convert a #rgb / #rrggbb hex to an `rgba(...)` string with the given alpha. */
+export function rgba(hex: string, alpha: number): string {
+  let h = hex.trim().replace(/^#/, "");
+  if (h.length === 3) {
+    h = h
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  }
+  const int = parseInt(h, 16);
+  if (h.length !== 6 || Number.isNaN(int)) {
+    // Fall back to a neutral, readable yellow if the hex is malformed.
+    return `rgba(255, 213, 79, ${clamp01(alpha)})`;
+  }
+  const r = (int >> 16) & 255;
+  const g = (int >> 8) & 255;
+  const b = int & 255;
+  return `rgba(${r}, ${g}, ${b}, ${clamp01(alpha)})`;
+}
+
+function clamp01(n: number): number {
+  if (Number.isNaN(n)) return 1;
+  return Math.min(1, Math.max(0, n));
+}
+
+/* ------------------------------------------------------------------ */
+/* Text-node collection and offset maths                              */
+/* ------------------------------------------------------------------ */
+
+/** True if `node` lives inside a skipped element (code, or an existing wrapper). */
+function isSkipped(node: Node, skipCode: boolean): boolean {
+  let el: HTMLElement | null = node.parentElement;
+  while (el) {
+    if (el.classList && el.classList.contains(CLS_WRAPPER)) return true;
+    if (skipCode && SKIP_TAGS.has(el.tagName)) return true;
+    el = el.parentElement;
+  }
+  return false;
+}
+
+/** Collect the visible text nodes of `container` in document order. */
+function collectTextNodes(
+  container: HTMLElement,
+  skipCode: boolean,
+): { pieces: TextPiece[]; text: string } {
+  const pieces: TextPiece[] = [];
+  let text = "";
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node: Node) {
+      if (!node.textContent || node.textContent.length === 0) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return isSkipped(node, skipCode)
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let offset = 0;
+  let n: Node | null;
+  while ((n = walker.nextNode())) {
+    const t = n as Text;
+    const len = t.data.length;
+    pieces.push({ node: t, start: offset, end: offset + len });
+    text += t.data;
+    offset += len;
+  }
+  return { pieces, text };
+}
+
+/**
+ * Raw character offset (within the collected text) of a DOM boundary point.
+ * Handles boundaries that land in Text nodes (the common case) and degrades
+ * gracefully for element boundaries.
+ */
+function rawOffsetOf(
+  boundaryNode: Node,
+  boundaryOffset: number,
+  pieces: TextPiece[],
+): number {
+  const r = document.createRange();
+  try {
+    r.setStart(boundaryNode, boundaryOffset);
+    r.collapse(true);
+  } catch {
+    return 0;
+  }
+  let total = 0;
+  for (const p of pieces) {
+    const len = p.node.data.length;
+    let endCmp: number;
+    try {
+      endCmp = r.comparePoint(p.node, len);
+    } catch {
+      endCmp = -1;
+    }
+    if (endCmp <= 0) {
+      total += len;
+      continue;
+    }
+    let startCmp: number;
+    try {
+      startCmp = r.comparePoint(p.node, 0);
+    } catch {
+      startCmp = 1;
+    }
+    if (startCmp >= 0) break; // whole piece is after the boundary
+    // Boundary lies strictly inside this piece.
+    total += boundaryNode === p.node ? boundaryOffset : 0;
+    break;
+  }
+  return total;
+}
+
+/** Build a whitespace-collapsed string plus a map back to raw offsets. */
+function buildNorm(text: string): { norm: string; map: number[] } {
+  const out: string[] = [];
+  const map: number[] = [];
+  let inWs = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (/\s/.test(ch)) {
+      if (!inWs) {
+        out.push(" ");
+        map.push(i);
+        inWs = true;
+      }
+    } else {
+      out.push(ch);
+      map.push(i);
+      inWs = false;
+    }
+  }
+  return { norm: out.join(""), map };
+}
+
+/** First normalised index whose raw offset is >= `raw`. */
+function rawToNorm(map: number[], raw: number): number {
+  for (let i = 0; i < map.length; i++) {
+    if (map[i] >= raw) return i;
+  }
+  return map.length;
+}
+
+/* ------------------------------------------------------------------ */
+/* Anchor matching                                                     */
+/* ------------------------------------------------------------------ */
+
+function commonSuffixLen(a: string, b: string): number {
+  let i = 0;
+  while (i < a.length && i < b.length && a[a.length - 1 - i] === b[b.length - 1 - i]) i++;
+  return i;
+}
+
+function commonPrefixLen(a: string, b: string): number {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i;
+}
+
+/**
+ * Locate `rec` within a normalised string. Returns the [start, end) range in
+ * normalised coordinates, or null if not found. Uses prefix/suffix context and
+ * the stored occurrence index to disambiguate repeated text.
+ */
+function findInNorm(
+  norm: string,
+  rec: HighlightRecord,
+): { s: number; e: number } | null {
+  const target = normStore(rec.exact);
+  if (!target) return null;
+  const starts: number[] = [];
+  let idx = norm.indexOf(target);
+  while (idx >= 0) {
+    starts.push(idx);
+    idx = norm.indexOf(target, idx + 1);
+  }
+  if (starts.length === 0) return null;
+  if (starts.length === 1) return { s: starts[0], e: starts[0] + target.length };
+
+  const wantPrefix = normStore(rec.prefix);
+  const wantSuffix = normStore(rec.suffix);
+  let best = starts[0];
+  let bestScore = -1;
+  starts.forEach((s, rank) => {
+    const e = s + target.length;
+    const before = norm.slice(Math.max(0, s - wantPrefix.length), s);
+    const after = norm.slice(e, e + wantSuffix.length);
+    let score = commonSuffixLen(before, wantPrefix) + commonPrefixLen(after, wantSuffix);
+    // Light tie-break toward the recorded occurrence rank.
+    score = score * 100 - Math.abs(rank - rec.occurrence);
+    if (score > bestScore) {
+      bestScore = score;
+      best = s;
+    }
+  });
+  return { s: best, e: best + target.length };
+}
+
+/* ------------------------------------------------------------------ */
+/* Wrapper element creation / styling                                  */
+/* ------------------------------------------------------------------ */
+
+/** Apply visual styles to an existing wrapper element from a record. */
+export function styleWrapper(
+  el: HTMLElement,
+  rec: HighlightRecord,
+  settings: PluginSettings,
+): void {
+  el.className = CLS_WRAPPER + " " + (rec.type === "underline" ? CLS_UNDERLINE : CLS_HIGHLIGHT);
+  el.setAttribute(ATTR_ID, rec.id);
+  el.setAttribute(ATTR_GROUP, rec.groupId);
+  el.setAttribute(ATTR_TYPE, rec.type);
+  el.style.removeProperty("background-color");
+  el.style.removeProperty("text-decoration-line");
+  el.style.removeProperty("text-decoration-color");
+  el.style.removeProperty("text-decoration-style");
+  el.style.removeProperty("text-decoration-thickness");
+  el.style.removeProperty("text-underline-offset");
+  el.style.removeProperty("box-shadow");
+
+  if (rec.type === "highlight") {
+    el.style.backgroundColor = rgba(rec.color, rec.opacity);
+    el.style.color = "inherit";
+    if (settings.highContrast) {
+      el.style.boxShadow = `inset 0 0 0 1px ${rgba(rec.color, Math.min(1, rec.opacity + 0.4))}`;
+    }
+  } else {
+    el.style.backgroundColor = "transparent";
+    el.style.textDecorationLine = "underline";
+    el.style.textDecorationColor = rec.color;
+    el.style.textDecorationStyle = rec.underline?.style ?? "solid";
+    el.style.textDecorationThickness = `${rec.underline?.thickness ?? 2}px`;
+    el.style.textUnderlineOffset = `${rec.underline?.offset ?? 3}px`;
+  }
+  el.setAttribute("aria-label", rec.note ? rec.note : `${rec.type} annotation`);
+}
+
+/** Create a fresh wrapper element for a record. */
+function createWrapperEl(rec: HighlightRecord, settings: PluginSettings): HTMLElement {
+  const tag = rec.type === "underline" ? "span" : "mark";
+  const el = document.createElement(tag);
+  styleWrapper(el, rec, settings);
+  return el;
+}
+
+/* ------------------------------------------------------------------ */
+/* Range wrapping                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Wrap the characters [rawStart, rawEnd) of `container` (in collected-text
+ * coordinates) using `makeWrapper`. A range that spans several inline elements
+ * yields several adjacent wrappers that share the record id. Returns the number
+ * of wrapper elements created.
+ */
+export function wrapRange(
+  container: HTMLElement,
+  rawStart: number,
+  rawEnd: number,
+  makeWrapper: () => HTMLElement,
+  skipCode: boolean,
+): number {
+  if (rawEnd <= rawStart) return 0;
+  const { pieces } = collectTextNodes(container, skipCode);
+  let wrapped = 0;
+  for (const p of pieces) {
+    const s = Math.max(rawStart, p.start);
+    const e = Math.min(rawEnd, p.end);
+    if (e <= s) continue;
+    let target: Text = p.node;
+    const localStart = s - p.start;
+    const wantLen = e - s;
+    try {
+      if (localStart > 0) target = target.splitText(localStart);
+      if (wantLen < target.data.length) target.splitText(wantLen);
+      const parent = target.parentNode;
+      if (!parent) continue;
+      const w = makeWrapper();
+      parent.insertBefore(w, target);
+      w.appendChild(target);
+      wrapped++;
+    } catch {
+      // Skip pieces that fail to split (detached/odd nodes) rather than throw.
+    }
+  }
+  return wrapped;
+}
+
+/* ------------------------------------------------------------------ */
+/* Capturing a selection                                               */
+/* ------------------------------------------------------------------ */
+
+/** Nearest block-level ancestor used as an anchoring unit. */
+function closestBlock(node: Node, root: HTMLElement): HTMLElement {
+  let el: HTMLElement | null = node instanceof HTMLElement ? node : node.parentElement;
+  while (el && el !== root) {
+    if (el.matches?.(BLOCK_SELECTOR)) return el;
+    el = el.parentElement;
+  }
+  // Fall back to the closest element child of the root, else the root itself.
+  let cur: HTMLElement | null = node instanceof HTMLElement ? node : node.parentElement;
+  return cur ?? root;
+}
+
+/** Collect leaf blocks (no nested block) intersecting the range, in order. */
+function leafBlocksInRange(range: Range, root: HTMLElement): HTMLElement[] {
+  const common =
+    range.commonAncestorContainer instanceof HTMLElement
+      ? range.commonAncestorContainer
+      : range.commonAncestorContainer.parentElement;
+  if (!common) return [];
+  const all = Array.from(common.querySelectorAll<HTMLElement>(BLOCK_SELECTOR));
+  const candidates = all.filter((b) => {
+    try {
+      return range.intersectsNode(b);
+    } catch {
+      return false;
+    }
+  });
+  // Keep only leaves (drop blocks that contain another candidate block).
+  const leaves = candidates.filter(
+    (b) => !candidates.some((other) => other !== b && b.contains(other)),
+  );
+  if (leaves.length > 0) return leaves;
+  // Single-block fallback.
+  const b = closestBlock(range.startContainer, root);
+  return b ? [b] : [];
+}
+
+function buildPart(
+  block: HTMLElement,
+  rawStart: number,
+  rawEnd: number,
+  contextLength: number,
+  skipCode: boolean,
+): CapturePart | null {
+  const { text } = collectTextNodes(block, skipCode);
+  const rawSel = text.slice(rawStart, rawEnd);
+  const exact = normStore(rawSel);
+  if (!exact) return null;
+  const prefix = normStore(text.slice(Math.max(0, rawStart - contextLength), rawStart));
+  const suffix = normStore(text.slice(rawEnd, rawEnd + contextLength));
+
+  // Occurrence index in normalised space (aligns with re-apply matching).
+  const { norm, map } = buildNorm(text);
+  const nStart = rawToNorm(map, rawStart);
+  let occurrence = 0;
+  let idx = norm.indexOf(exact);
+  while (idx >= 0 && idx < nStart) {
+    occurrence++;
+    idx = norm.indexOf(exact, idx + 1);
+  }
+  return { block, rawStart, rawEnd, exact, prefix, suffix, occurrence };
+}
+
+/**
+ * Convert the current selection into one or more capture parts (one per block).
+ * Returns an empty array if the selection is empty or whitespace-only.
+ */
+export function captureSelection(
+  sel: Selection,
+  root: HTMLElement,
+  settings: PluginSettings,
+): CapturePart[] {
+  if (sel.rangeCount === 0 || sel.isCollapsed) return [];
+  const range = sel.getRangeAt(0);
+  if (range.collapsed) return [];
+
+  const blocks = leafBlocksInRange(range, root);
+  const parts: CapturePart[] = [];
+
+  if (blocks.length <= 1) {
+    const block = blocks[0] ?? closestBlock(range.startContainer, root);
+    const { pieces } = collectTextNodes(block, settings.skipCodeBlocks);
+    const rawStart = rawOffsetOf(range.startContainer, range.startOffset, pieces);
+    const rawEnd = rawOffsetOf(range.endContainer, range.endOffset, pieces);
+    const lo = Math.min(rawStart, rawEnd);
+    const hi = Math.max(rawStart, rawEnd);
+    const part = buildPart(block, lo, hi, settings.contextLength, settings.skipCodeBlocks);
+    if (part) parts.push(part);
+    return parts;
+  }
+
+  // Multi-block: cover each block's portion.
+  blocks.forEach((block, i) => {
+    const { pieces, text } = collectTextNodes(block, settings.skipCodeBlocks);
+    let rawStart = 0;
+    let rawEnd = text.length;
+    if (i === 0) {
+      rawStart = rawOffsetOf(range.startContainer, range.startOffset, pieces);
+    }
+    if (i === blocks.length - 1) {
+      rawEnd = rawOffsetOf(range.endContainer, range.endOffset, pieces);
+    }
+    if (rawEnd <= rawStart) return;
+    const part = buildPart(block, rawStart, rawEnd, settings.contextLength, settings.skipCodeBlocks);
+    if (part) parts.push(part);
+  });
+  return parts;
+}
+
+/* ------------------------------------------------------------------ */
+/* Applying records (re-render path + live)                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Apply all records that occur within `container`. Safe to call repeatedly:
+ * a record already present (by id) in this container is skipped.
+ */
+export function applyToContainer(
+  container: HTMLElement,
+  records: HighlightRecord[],
+  settings: PluginSettings,
+): void {
+  if (records.length === 0) return;
+  const haystack = container.textContent ?? "";
+  if (!haystack) return;
+
+  for (const rec of records) {
+    // Cheap pre-filter: first token of the anchor must appear somewhere.
+    const token = rec.exact.split(/\s+/)[0];
+    if (token && !haystack.includes(token)) continue;
+    // Idempotency within this render pass.
+    if (container.querySelector(`[${ATTR_ID}="${cssEscape(rec.id)}"]`)) continue;
+
+    const { pieces, text } = collectTextNodes(container, settings.skipCodeBlocks);
+    if (!text) break;
+    const { norm, map } = buildNorm(text);
+    const hit = findInNorm(norm, rec);
+    if (!hit) continue;
+    const rawStart = map[hit.s];
+    const rawEnd = hit.e - 1 >= 0 ? map[hit.e - 1] + 1 : rawStart;
+    // pieces are recomputed inside wrapRange; we only needed `text`/`norm` here.
+    void pieces;
+    wrapRange(
+      container,
+      rawStart,
+      rawEnd,
+      () => createWrapperEl(rec, settings),
+      settings.skipCodeBlocks,
+    );
+  }
+}
+
+/** Live-wrap a freshly captured part (instant feedback before re-render). */
+export function applyPartLive(
+  part: CapturePart,
+  rec: HighlightRecord,
+  settings: PluginSettings,
+): number {
+  return wrapRange(
+    part.block,
+    part.rawStart,
+    part.rawEnd,
+    () => createWrapperEl(rec, settings),
+    settings.skipCodeBlocks,
+  );
+}
+
+/** Remove every wrapper for `id` within `root`, merging the freed text. */
+export function unwrapById(root: ParentNode, id: string): void {
+  const els = root.querySelectorAll<HTMLElement>(`[${ATTR_ID}="${cssEscape(id)}"]`);
+  els.forEach((el) => {
+    const parent = el.parentNode;
+    if (!parent) return;
+    while (el.firstChild) parent.insertBefore(el.firstChild, el);
+    parent.removeChild(el);
+    (parent as Element).normalize?.();
+  });
+}
+
+/** Restyle every wrapper for a group in-place (used when recolouring). */
+export function restyleGroup(
+  root: ParentNode,
+  groupId: string,
+  rec: HighlightRecord,
+  settings: PluginSettings,
+): void {
+  const els = root.querySelectorAll<HTMLElement>(`[${ATTR_GROUP}="${cssEscape(groupId)}"]`);
+  els.forEach((el) => styleWrapper(el, rec, settings));
+}
+
+/** Minimal CSS attribute-value escape for use in selectors. */
+function cssEscape(value: string): string {
+  if (typeof (window as unknown as { CSS?: { escape?: (v: string) => string } }).CSS?.escape === "function") {
+    return (window as unknown as { CSS: { escape: (v: string) => string } }).CSS.escape(value);
+  }
+  return value.replace(/["\\\]]/g, "\\$&");
+}

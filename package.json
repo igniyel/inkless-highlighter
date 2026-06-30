@@ -1,0 +1,30 @@
+{
+  "name": "inkless-highlighter",
+  "version": "1.0.0",
+  "description": "Highlight and underline text directly in Obsidian Reading view by dragging to select. Non-destructive — never edits your notes.",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "typecheck": "tsc -noEmit -skipLibCheck"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "highlight",
+    "underline",
+    "annotation",
+    "reading-mode"
+  ],
+  "author": "Claude (Anthropic)",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.20.0",
+    "obsidian": "^1.5.7",
+    "tslib": "^2.6.2",
+    "typescript": "^5.4.0"
+  }
+}

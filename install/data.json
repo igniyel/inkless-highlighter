@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "settings": {
+    "palette": [
+      {
+        "id": "c-orange",
+        "name": "Orange",
+        "color": "#ffb74d"
+      },
+      {
+        "id": "c-yellow",
+        "name": "Yellow",
+        "color": "#ffd54f"
+      },
+      {
+        "id": "c-blue",
+        "name": "Blue",
+        "color": "#64b5f6"
+      },
+      {
+        "id": "c-teal",
+        "name": "Teal",
+        "color": "#4db6ac"
+      },
+      {
+        "id": "c-green",
+        "name": "Green",
+        "color": "#81c784"
+      },
+      {
+        "id": "c-purple",
+        "name": "Purple",
+        "color": "#ba68c8"
+      },
+      {
+        "id": "c-red",
+        "name": "Red",
+        "color": "#e57373"
+      },
+      {
+        "id": "c-pink",
+        "name": "Pink",
+        "color": "#f06292"
+      }
+    ],
+    "defaultTool": "highlight",
+    "lastHighlightColorId": "c-yellow",
+    "lastUnderlineColorId": "c-red",
+    "highlightOpacity": 0.55,
+    "underline": {
+      "thickness": 3,
+      "style": "solid",
+      "offset": 5
+    },
+    "stickyTool": true,
+    "swapClickRoles": true,
+    "clearSelectionAfter": true,
+    "confirmDelete": false,
+    "skipCodeBlocks": true,
+    "applyInLivePreview": true,
+    "contextLength": 80,
+    "followRenames": true,
+    "pruneOnDelete": false,
+    "showToolbar": true,
+    "toolbarPlacement": {
+      "corner": "br",
+      "x": 653.70703125,
+      "y": 0
+    },
+    "showEraser": true,
+    "showSettingsButton": true,
+    "highContrast": false
+  },
+  "highlights": {}
+}
