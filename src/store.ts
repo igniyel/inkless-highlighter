@@ -7,7 +7,7 @@
  */
 
 import { debounce, type Debouncer } from "obsidian";
-import { CRDTMergeEngine, MessagePackSyncCodec, enrichRecord, IndexManager, makeHistory, PersistenceLayer } from "./production";
+import { CRDTMergeEngine, MessagePackSyncCodec, WorkerBridge, enrichRecord, IndexManager, makeHistory, PersistenceLayer } from "./production";
 import { SCHEMA_VERSION, defaultSettings } from "./constants";
 import type {
   FileHighlights,
@@ -26,6 +26,8 @@ export class HighlightStore {
   private persistence: PersistenceLayer | null = null;
   private readonly index = new IndexManager();
   private readonly deviceId = this.getDeviceId();
+  private vaultName = "";
+  private readonly worker = new WorkerBridge();
   private historySequence = 0;
   private readonly flush: Debouncer<[], void>;
 
@@ -34,12 +36,13 @@ export class HighlightStore {
     this.settings = this.mergeSettings(loaded?.settings);
     this.highlights = this.sanitise(loaded?.highlights);
     for (const [path, records] of Object.entries(this.highlights)) {
-      this.index.setFile(path, records.map((r) => enrichRecord(r, path, this.deviceId)));
+      this.index.setFile(path, records.map((r) => enrichRecord(r, path, this.deviceId, this.vaultName)));
     }
     this.flush = debounce(() => void this.persistNow(), 500, true);
   }
 
-  async init(pluginId: string): Promise<void> {
+  async init(pluginId: string, vaultName = ""): Promise<void> {
+    this.vaultName = vaultName;
     this.persistence = new PersistenceLayer(pluginId, (data) => this.save({ schema: SCHEMA_VERSION, settings: this.settings, highlights: data.highlights ?? {} } as PersistedData));
     await this.persistence.open();
     await this.persistence.putSettings(this.settings);
@@ -57,7 +60,7 @@ export class HighlightStore {
       return;
     }
     const batches = Object.entries(this.highlights).map(([path, records]) =>
-      records.map((r) => enrichRecord(r, path, this.deviceId)),
+      records.map((r) => enrichRecord(r, path, this.deviceId, this.vaultName)),
     );
     for (const batch of batches) await this.persistence.putAnnotations(batch);
   }
@@ -110,6 +113,13 @@ export class HighlightStore {
     return out;
   }
 
+
+  private runTransaction(validate: () => boolean, mutate: () => void, commit: () => Promise<void>, notify: () => void): void {
+    if (!validate()) return;
+    mutate();
+    void commit().finally(() => notify());
+  }
+
   /* ----- queries ----- */
 
   getForFile(path: string): HighlightRecord[] {
@@ -133,13 +143,21 @@ export class HighlightStore {
   add(path: string, records: HighlightRecord[]): void {
     if (records.length === 0) return;
     const list = this.highlights[path] ?? (this.highlights[path] = []);
-    const stored = records.map((r) => enrichRecord(r, path, this.deviceId));
-    list.push(...stored);
-    this.index.setFile(path, (this.highlights[path] as StoredAnnotation[]));
-    void this.persistence?.appendWal({ type: "add", path, records: stored });
-    void this.persistence?.putAnnotations(stored);
-    void this.persistence?.addHistory(makeHistory(path, ++this.historySequence, `Added ${records.length} annotation(s)`, [{ type: "remove", records: stored }], [{ type: "add", records: stored }]));
-    this.flush();
+    const stored = records.map((r) => enrichRecord(r, path, this.deviceId, this.vaultName));
+    void Promise.all(stored.map((r) => this.worker.fingerprint(`${r.prefix} ${r.exact} ${r.suffix}`)));
+    this.runTransaction(
+      () => records.length > 0,
+      () => {
+        list.push(...stored);
+        this.index.setFile(path, (this.highlights[path] as StoredAnnotation[]));
+      },
+      async () => {
+        await this.persistence?.appendWal({ type: "add", path, records: stored });
+        await this.persistence?.putAnnotations(stored);
+        await this.persistence?.addHistory(makeHistory(path, ++this.historySequence, `Added ${records.length} annotation(s)`, [{ type: "remove", records: stored }], [{ type: "add", records: stored }]));
+      },
+      () => this.flush(),
+    );
   }
 
   /** Remove an entire group; returns the removed records. */
@@ -151,7 +169,7 @@ export class HighlightStore {
     if (kept.length) this.highlights[path] = kept;
     else delete this.highlights[path];
     if (removed.length) {
-      this.index.setFile(path, kept.map((r) => enrichRecord(r, path, this.deviceId)));
+      this.index.setFile(path, kept.map((r) => enrichRecord(r, path, this.deviceId, this.vaultName)));
       void this.persistence?.appendWal({ type: "removeGroup", path, groupId });
       void this.persistence?.deleteGroup(path, groupId);
       this.flush();
@@ -171,7 +189,7 @@ export class HighlightStore {
       }
     }
     if (changed) {
-      const stored = list.map((r) => enrichRecord(r, path, this.deviceId));
+      const stored = list.map((r) => enrichRecord(r, path, this.deviceId, this.vaultName));
       this.index.setFile(path, stored);
       void this.persistence?.appendWal({ type: "updateGroup", path, groupId, patch });
       void this.persistence?.putAnnotations(stored.filter((r) => r.groupId === groupId));
@@ -192,10 +210,10 @@ export class HighlightStore {
     const existing = this.highlights[newPath] ?? [];
     this.highlights[newPath] = existing.concat(list);
     this.index.deleteFile(oldPath);
-    this.index.setFile(newPath, this.highlights[newPath].map((r) => enrichRecord(r, newPath, this.deviceId)));
+    this.index.setFile(newPath, this.highlights[newPath].map((r) => enrichRecord(r, newPath, this.deviceId, this.vaultName)));
     void this.persistence?.appendWal({ type: "rename", oldPath, newPath });
     void this.persistence?.deleteFile(oldPath);
-    void this.persistence?.putAnnotations(this.highlights[newPath].map((r) => enrichRecord(r, newPath, this.deviceId)));
+    void this.persistence?.putAnnotations(this.highlights[newPath].map((r) => enrichRecord(r, newPath, this.deviceId, this.vaultName)));
     this.flush();
   }
 
@@ -261,7 +279,7 @@ export class HighlightStore {
   exportSyncPayload(updatedAfter = 0): Uint8Array {
     const records = Object.values(this.highlights)
       .flat()
-      .map((record) => enrichRecord(record, (record as StoredAnnotation).filePath ?? "", this.deviceId))
+      .map((record) => enrichRecord(record, (record as StoredAnnotation).filePath ?? "", this.deviceId, this.vaultName))
       .filter((record) => record.updatedAt > updatedAfter);
     return MessagePackSyncCodec.encode(records);
   }
@@ -283,6 +301,15 @@ export class HighlightStore {
     }
     if (merged) this.flush();
     return merged;
+  }
+
+  async getPersistentHistory(path: string): Promise<Array<{ groupId: string; before: HighlightRecord[]; after: HighlightRecord[] }>> {
+    const records = await this.persistence?.getHistory(path, 50) ?? [];
+    return records.map((record) => ({
+      groupId: record.forwardOps[0]?.groupId ?? record.inverseOps[0]?.groupId ?? record.forwardOps[0]?.records?.[0]?.groupId ?? record.inverseOps[0]?.records?.[0]?.groupId ?? "",
+      before: (record.inverseOps[0]?.records ?? []) as HighlightRecord[],
+      after: (record.forwardOps[0]?.records ?? []) as HighlightRecord[],
+    })).filter((record) => record.groupId);
   }
 
   /* ----- saving ----- */

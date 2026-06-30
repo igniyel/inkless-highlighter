@@ -540,8 +540,23 @@ export function styleWrapper(
   }
   const confidence = (rec as StoredAnnotation).confidence ?? 1;
   el.dataset.rhlConfidence = confidence.toFixed(2);
-  if (confidence < 0.95) el.style.opacity = confidence >= 0.8 ? "0.82" : confidence >= 0.5 ? "0.68" : "0.38";
-  if (confidence >= 0.5 && confidence < 0.8) el.style.borderBottom = `1px dashed ${rec.color}`;
+  el.style.removeProperty("opacity");
+  el.style.removeProperty("border-bottom");
+  el.style.removeProperty("outline");
+  if (confidence >= 0.95) {
+    // Normal solid highlight.
+  } else if (confidence >= 0.8) {
+    el.style.opacity = "0.82";
+    el.title = "This annotation may have shifted.";
+  } else if (confidence >= 0.5) {
+    el.style.opacity = "0.68";
+    el.style.borderBottom = `1px dashed ${rec.color}`;
+    el.title = "Approximate annotation match.";
+  } else if (confidence >= 0.2) {
+    el.style.opacity = "0.32";
+    el.style.outline = `1px dotted ${rec.color}`;
+    el.title = "Very uncertain annotation match; click to verify.";
+  }
   el.setAttribute("aria-label", rec.note ? rec.note : `${rec.type} annotation${confidence < 0.95 ? ` (${Math.round(confidence * 100)}% match confidence)` : ""}`);
 }
 

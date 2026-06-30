@@ -7,7 +7,8 @@ export type WalMutation =
   | { type: "rename"; oldPath: string; newPath: string }
   | { type: "deleteFile"; path: string }
   | { type: "settings"; settings: PluginSettings }
-  | { type: "clearAll" };
+  | { type: "clearAll" }
+  | { type: "checkpoint"; sequence: number; timestamp: number };
 
 
 export interface WalEntry {
@@ -74,14 +75,14 @@ export class SimHashEngine {
   }
 }
 
-export function enrichRecord(rec: HighlightRecord, filePath: string, deviceId: string): StoredAnnotation {
+export function enrichRecord(rec: HighlightRecord, filePath: string, deviceId: string, vaultName = ""): StoredAnnotation {
   const block = `${rec.prefix} ${rec.exact} ${rec.suffix}`.trim();
   const now = Date.now();
   const updatedAt = (rec as StoredAnnotation).updatedAt ?? now;
   return {
     ...rec,
     filePath,
-    fileId: stableFileId(filePath),
+    fileId: stableFileId(`${filePath}:${vaultName}`),
     contentHash: SimHashEngine.fingerprint(rec.exact),
     simhash: {
       exact: SimHashEngine.fingerprint(rec.exact),
@@ -120,18 +121,23 @@ export class CRDTMergeEngine {
   }
 }
 
+interface IntervalNode {
+  center: number;
+  intervals: Array<{ start: number; end: number; id: string }>;
+  left: IntervalNode | null;
+  right: IntervalNode | null;
+}
+
 export class IntervalTree {
-  private intervals: Array<{ start: number; end: number; id: string }> = [];
+  private pending: Array<{ start: number; end: number; id: string }> = [];
+  private root: IntervalNode | null = null;
   add(start: number, end: number, id: string): void {
-    this.intervals.push({ start, end, id });
-    this.intervals.sort((a, b) => a.start - b.start || a.end - b.end);
+    this.pending.push({ start, end, id });
+    this.root = buildIntervalNode(this.pending);
   }
   query(start: number, end: number): string[] {
     const hits: string[] = [];
-    for (const item of this.intervals) {
-      if (item.start >= end) break;
-      if (item.end > start) hits.push(item.id);
-    }
+    queryIntervalNode(this.root, start, end, hits);
     return hits;
   }
 }
@@ -193,17 +199,24 @@ export class PersistenceLayer {
   async open(): Promise<void> {
     if (typeof indexedDB === "undefined") return;
     this.db = await new Promise((resolve, reject) => {
-      const req = indexedDB.open(this.name, 2);
+      const req = indexedDB.open(this.name, 3);
       req.onupgradeneeded = () => {
         const db = req.result;
-        const annotations = db.createObjectStore("annotations", { keyPath: ["filePath", "id"] });
-        annotations.createIndex("byFilePath", "filePath"); annotations.createIndex("byGroupId", "groupId");
-        annotations.createIndex("byColorId", "colorId"); annotations.createIndex("byType", "type");
-        annotations.createIndex("byCreatedAt", "createdAt"); annotations.createIndex("byContentHash", "contentHash");
-        db.createObjectStore("fileIndex", { keyPath: "filePath" }); db.createObjectStore("settings", { keyPath: "key" });
-        db.createObjectStore("wal", { keyPath: "sequence", autoIncrement: true });
-        const history = db.createObjectStore("history", { keyPath: ["filePath", "sequence"] }); history.createIndex("byTimestamp", "timestamp");
-        db.createObjectStore("syncState", { keyPath: "deviceId" });
+        const annotations = db.objectStoreNames.contains("annotations")
+          ? req.transaction!.objectStore("annotations")
+          : db.createObjectStore("annotations", { keyPath: ["filePath", "id"] });
+        ensureIndex(annotations, "byFilePath", "filePath"); ensureIndex(annotations, "byGroupId", "groupId");
+        ensureIndex(annotations, "byColorId", "colorId"); ensureIndex(annotations, "byType", "type");
+        ensureIndex(annotations, "byCreatedAt", "createdAt"); ensureIndex(annotations, "byContentHash", "contentHash");
+        if (!db.objectStoreNames.contains("fileIndex")) db.createObjectStore("fileIndex", { keyPath: "filePath" });
+        if (!db.objectStoreNames.contains("settings")) db.createObjectStore("settings", { keyPath: "key" });
+        if (!db.objectStoreNames.contains("wal")) db.createObjectStore("wal", { keyPath: "sequence", autoIncrement: true });
+        const history = db.objectStoreNames.contains("history")
+          ? req.transaction!.objectStore("history")
+          : db.createObjectStore("history", { keyPath: ["filePath", "sequence"] });
+        ensureIndex(history, "byTimestamp", "timestamp");
+        if (!db.objectStoreNames.contains("syncState")) db.createObjectStore("syncState", { keyPath: "deviceId" });
+        if (!db.objectStoreNames.contains("checkpoints")) db.createObjectStore("checkpoints", { keyPath: "key" });
         for (let i = 0; i < 4; i++) if (!db.objectStoreNames.contains(`annotationShard${i}`)) db.createObjectStore(`annotationShard${i}`, { keyPath: ["filePath", "id"] });
       };
       req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error);
@@ -229,6 +242,8 @@ export class PersistenceLayer {
     if (!this.db) return;
     const cutoff = Date.now() - olderThanMs;
     const entries = await this.getAll<WalEntry>("wal");
+    const maxSequence = entries.reduce((max, entry) => Math.max(max, entry.sequence), 0);
+    await this.put("checkpoints", { key: "last", sequence: maxSequence, timestamp: Date.now() });
     await this.tx(["wal"], "readwrite", (tx) => {
       const store = tx.objectStore("wal");
       entries.filter((entry) => entry.timestamp < cutoff).forEach((entry) => store.delete(entry.sequence));
@@ -255,6 +270,11 @@ export class PersistenceLayer {
     });
   }
   async putSyncState(deviceId: string, state: unknown): Promise<void> { await this.put("syncState", { deviceId, state, updatedAt: Date.now() }); }
+  async getSyncStates(): Promise<Array<{ deviceId: string; state: unknown; updatedAt: number }>> { return this.getAll("syncState"); }
+  async getHistory(filePath: string, limit = 50): Promise<HistoryRecord[]> {
+    const records = await this.getAll<HistoryRecord>("history");
+    return records.filter((record) => record.filePath === filePath && record.type === "undoable").sort((a, b) => b.sequence - a.sequence).slice(0, limit).reverse();
+  }
   private async getAll<T>(store: string): Promise<T[]> {
     if (!this.db) return [];
     return new Promise((resolve, reject) => {
@@ -392,6 +412,27 @@ function readU32(bytes: Uint8Array, offset: number): number { return ((bytes[off
 function bytesToBase64(bytes: Uint8Array): string { let binary = ""; bytes.forEach((b) => binary += String.fromCharCode(b)); return btoa(binary); }
 function base64ToBytes(value: string): Uint8Array { const binary = atob(value); const out = new Uint8Array(binary.length); for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i); return out; }
 
+function buildIntervalNode(items: Array<{ start: number; end: number; id: string }>): IntervalNode | null {
+  if (items.length === 0) return null;
+  const points = items.flatMap((item) => [item.start, item.end]).sort((a, b) => a - b);
+  const center = points[Math.floor(points.length / 2)];
+  const left: typeof items = [];
+  const right: typeof items = [];
+  const intervals: typeof items = [];
+  for (const item of items) {
+    if (item.end < center) left.push(item);
+    else if (item.start > center) right.push(item);
+    else intervals.push(item);
+  }
+  return { center, intervals, left: buildIntervalNode(left), right: buildIntervalNode(right) };
+}
+function queryIntervalNode(node: IntervalNode | null, start: number, end: number, hits: string[]): void {
+  if (!node) return;
+  for (const item of node.intervals) if (item.start < end && item.end > start) hits.push(item.id);
+  if (start <= node.center) queryIntervalNode(node.left, start, end, hits);
+  if (end >= node.center) queryIntervalNode(node.right, start, end, hits);
+}
+
 function normalise(s: string): string { return s.replace(/\s+/g, " ").trim(); }
 function slidingWindows(text: string, targetLength: number, stride: number): Array<{ start: number; end: number; text: string; rank: number }> {
   const out: Array<{ start: number; end: number; text: string; rank: number }> = [];
@@ -447,3 +488,7 @@ function hamming64(a: bigint, b: bigint): number { let x = a ^ b, n = 0; while (
 function crc32(s: string): number { let c = ~0; for (let i = 0; i < s.length; i++) { c ^= s.charCodeAt(i); for (let j = 0; j < 8; j++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); } return ~c >>> 0; }
 function mergeClock(a: Record<string, number>, b: Record<string, number>): Record<string, number> { const out = { ...a }; for (const [k, v] of Object.entries(b)) out[k] = Math.max(out[k] ?? 0, v); return out; }
 function compareClock(a: Record<string, number>, b: Record<string, number>): "a" | "b" | "concurrent" { let ag = false, bg = false; for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) { if ((a[k] ?? 0) > (b[k] ?? 0)) ag = true; if ((b[k] ?? 0) > (a[k] ?? 0)) bg = true; } return ag && !bg ? "a" : bg && !ag ? "b" : "concurrent"; }
+
+function ensureIndex(store: IDBObjectStore, name: string, keyPath: string): void {
+  if (!store.indexNames.contains(name)) store.createIndex(name, keyPath);
+}

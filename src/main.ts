@@ -103,7 +103,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   async onload(): Promise<void> {
     const loaded = await this.loadData();
     this.store = new HighlightStore(loaded ?? null, (data) => this.saveData(data));
-    await this.store.init(this.manifest.id);
+    await this.store.init(this.manifest.id, this.app.vault.getName());
     this.settings = this.store.settings;
 
     this.toolbarPlacement = this.loadToolbarPlacement();
@@ -137,7 +137,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     // Renew a note's undo history whenever its tab is opened.
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
-        if (file instanceof TFile) this.history.delete(file.path);
+        if (file instanceof TFile) void this.restorePersistentHistory(file.path);
       }),
     );
 
@@ -345,6 +345,13 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     ).map((n) => n.textContent ?? "");
     const text = parts.join(" ").replace(/\s+/g, " ").trim();
     void this.copyToClipboard(text, "Copied annotation text.");
+  }
+
+
+  private async restorePersistentHistory(path: string): Promise<void> {
+    const undo = await this.store.getPersistentHistory(path);
+    this.history.set(path, { undo, redo: [] });
+    this.toolbar?.render();
   }
 
   /* ------------------------------------------------------------------ */
