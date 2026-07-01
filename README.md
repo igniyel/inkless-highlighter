@@ -9,6 +9,12 @@ Annotations are stored **non-destructively**: your Markdown files are never
 rewritten. The plugin remembers each annotation by the text it covers and
 re-applies it every time the note is rendered.
 
+> **Try it in your browser** — a live, interactive demo of the plugin (drag to
+> highlight, palette, neon glow, undo/redo) lives in [`docs/`](docs/index.html).
+> Open `docs/index.html`, or enable GitHub Pages on the `docs/` folder to host it
+> at `https://<user>.github.io/inkless-highlighter/`. The same page has a
+> one-click download of the ready-to-install plugin folder.
+
 ---
 
 ## Table of contents

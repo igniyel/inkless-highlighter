@@ -249,6 +249,23 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     else this.settings.lastUnderlineColorId = colorId;
   }
 
+  deletePaletteColor(colorId: string): void {
+    const palette = this.settings.palette;
+    if (palette.length <= 1) return; // keep at least one colour
+    const idx = palette.findIndex((c) => c.id === colorId);
+    if (idx === -1) return;
+    palette.splice(idx, 1);
+    // Repair either tool's selection if it pointed at the removed colour.
+    const fallback = palette[0].id;
+    if (this.settings.lastHighlightColorId === colorId) {
+      this.settings.lastHighlightColorId = fallback;
+    }
+    if (this.settings.lastUnderlineColorId === colorId) {
+      this.settings.lastUnderlineColorId = fallback;
+    }
+    this.saveSettings();
+  }
+
   saveSettings(): void {
     this.store.scheduleSave();
     this.toolbar?.render();
