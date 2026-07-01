@@ -29,6 +29,8 @@ export interface UIHost {
   resolveColor(colorId: string): string;
   getToolColorId(tool: ToolType): string;
   setToolColorId(tool: ToolType, colorId: string): void;
+  /** Remove a colour from the palette, repairing any selection that used it. */
+  deletePaletteColor(colorId: string): void;
 
   /** Debounced persistence of settings. */
   saveSettings(): void;
@@ -555,6 +557,8 @@ interface SwatchHandlers {
   repaintAfterPick: boolean;
   /** Called after a brand-new colour is added through the "+" tile. */
   onAdded?: (id: string) => void;
+  /** Called after the palette changes in place (e.g. a colour is deleted). */
+  onChanged?: () => void;
 }
 
 /**
@@ -571,6 +575,7 @@ function buildSwatchGrid(
   const paint = () => {
     grid.replaceChildren();
     const selected = handlers.selectedId?.() ?? null;
+    const canDelete = host.settings.palette.length > 1;
     for (const c of host.settings.palette) {
       const sw = grid.createEl("button", { cls: "rhl-swatch" });
       sw.type = "button";
@@ -583,6 +588,21 @@ function buildSwatchGrid(
         handlers.onPick(c.id);
         if (handlers.repaintAfterPick) paint();
       });
+      // A little delete affordance in the corner, shown on hover, so a colour
+      // can be removed straight from the palette without opening settings.
+      if (canDelete) {
+        const del = sw.createSpan({ cls: "rhl-swatch-del" });
+        setIcon(del, "x");
+        setTooltip(del, `Delete ${c.name}`, { placement: "top" });
+        del.setAttribute("aria-label", `Delete ${c.name}`);
+        del.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          host.deletePaletteColor(c.id);
+          paint();
+          handlers.onChanged?.();
+        });
+      }
     }
     // The "+" tile: an inner dashed border with a plus, for adding a colour.
     const add = grid.createEl("button", { cls: "rhl-swatch rhl-swatch-add" });
@@ -709,6 +729,11 @@ function buildPalettePopover(
     onAdded: (id) => {
       host.setToolColorId(tool, id);
       host.saveSettings();
+      updatePreview();
+      onChange();
+    },
+    onChanged: () => {
+      // A colour was deleted from the palette; refresh preview + colour bar.
       updatePreview();
       onChange();
     },

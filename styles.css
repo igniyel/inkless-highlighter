@@ -160,6 +160,7 @@
 }
 
 .rhl-swatch {
+  position: relative;
   width: 100%;
   aspect-ratio: 1 / 1;
   min-height: 0;
@@ -177,6 +178,46 @@
 
 .rhl-swatch.is-selected {
   box-shadow: 0 0 0 2px var(--background-primary), 0 0 0 4px var(--interactive-accent);
+}
+
+/* Delete-this-colour badge, top-right of each swatch, revealed on hover. */
+.rhl-swatch-del {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background-color: var(--background-primary);
+  color: var(--text-muted);
+  box-shadow: 0 0 0 1px var(--background-modifier-border);
+  cursor: pointer;
+}
+
+.rhl-swatch:hover .rhl-swatch-del {
+  display: inline-flex;
+}
+
+.rhl-swatch-del:hover {
+  background-color: var(--text-error, #e5534b);
+  color: var(--text-on-accent, #fff);
+  box-shadow: none;
+}
+
+.rhl-swatch-del .svg-icon {
+  width: 10px;
+  height: 10px;
+}
+
+/* Touch devices have no hover: keep the delete badge subtly visible. */
+@media (hover: none) {
+  .rhl-swatch-del {
+    display: inline-flex;
+    opacity: 0.8;
+  }
 }
 
 /* The "add a colour" tile: a plus inside an inner dashed border. */

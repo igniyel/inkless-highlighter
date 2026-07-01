@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inkless Highlighter — highlight &amp; underline in Obsidian, non-destructively</title>
+  <meta name="description" content="A non-destructive highlighter and underliner for Obsidian's Reading view. Drag to annotate, pick from a neon-ready palette, and never touch your Markdown. Try it live, then download." />
+  <meta property="og:title" content="Inkless Highlighter for Obsidian" />
+  <meta property="og:description" content="Drag to highlight or underline in Reading view — non-destructive, colourful, and fast. Try it live in your browser." />
+  <meta property="og:type" content="website" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111827'/%3E%3Crect x='6' y='19' width='20' height='6' rx='2' fill='%23ffe14d'/%3E%3Cpath d='M9 15l6-6 4 4-6 6H9z' fill='%2346f08c'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="bg-orbs" aria-hidden="true"><span></span><span></span><span></span></div>
+
+  <header class="site-header">
+    <a class="brand" href="#top">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="28" height="28"><rect width="32" height="32" rx="8" fill="currentColor"/><rect x="6" y="19" width="20" height="6" rx="2" fill="#ffe14d"/><path d="M9 15l6-6 4 4-6 6H9z" fill="#46f08c"/></svg>
+      </span>
+      <span>Inkless Highlighter</span>
+    </a>
+    <nav class="nav">
+      <a href="#features">Features</a>
+      <a href="#try">Try it</a>
+      <a href="#install">Install</a>
+      <a class="nav-cta" href="#install">Download</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <!-- Hero -->
+    <section class="hero">
+      <div class="hero-copy">
+        <span class="pill">Obsidian plugin · v1.1.0</span>
+        <h1>Highlight and underline in <span class="grad">Reading view</span> — without touching your notes.</h1>
+        <p class="lead">
+          Drag across any text to highlight or underline it. Pick from a neon-ready colour
+          palette, switch tools with a click, and undo instantly. Your Markdown is never
+          rewritten — annotations live alongside your vault and travel with it.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#install">Download plugin</a>
+          <a class="btn btn-ghost" href="#try">Try the live demo ↓</a>
+        </div>
+        <ul class="hero-badges">
+          <li>Non-destructive</li>
+          <li>Neon &amp; brighter styles</li>
+          <li>Undo / redo</li>
+          <li>Mobile &amp; iPad</li>
+        </ul>
+      </div>
+      <div class="hero-visual" aria-hidden="true">
+        <div class="mini-note">
+          <p>The quarterly report highlights <mark class="mk mk-y">record revenue</mark> and a
+          <mark class="mk mk-c">promising outlook</mark> for the next term.</p>
+          <p>Key risks remain in <span class="ul ul-g">supply logistics</span>, but the team is
+          <mark class="mk mk-p">confident</mark> in the roadmap.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section id="features" class="section">
+      <h2 class="section-title">Everything you'd want from a highlighter</h2>
+      <p class="section-sub">Purpose-built for Obsidian's Reading view, tuned for real note-taking.</p>
+      <div class="cards">
+        <article class="card">
+          <div class="card-ic">✍️</div>
+          <h3>Drag to annotate</h3>
+          <p>Select text and it's instantly highlighted or underlined. No hotkeys, no Markdown edits.</p>
+        </article>
+        <article class="card">
+          <div class="card-ic">🎨</div>
+          <h3>Editable palette</h3>
+          <p>Five vivid defaults, a “+” to add named colours, and a hover “×” to delete — right from the palette.</p>
+        </article>
+        <article class="card">
+          <div class="card-ic">💡</div>
+          <h3>Neon &amp; brighter</h3>
+          <p>Give highlights a luminous neon glow, or make underlines pop with a brighter, vivid line.</p>
+        </article>
+        <article class="card">
+          <div class="card-ic">↩️</div>
+          <h3>Undo / redo</h3>
+          <p>Ctrl/Cmd+Z removes your last annotation; Shift to redo. Per-note history, right in Reading view.</p>
+        </article>
+        <article class="card">
+          <div class="card-ic">📱</div>
+          <h3>Mobile &amp; iPad</h3>
+          <p>Roomier touch targets, tap to select, long-press for options. The toolbar stays put through rotations.</p>
+        </article>
+        <article class="card">
+          <div class="card-ic">⚡</div>
+          <h3>Fast, durable storage</h3>
+          <p>Per-file shards with lazy loading and indexes — incremental writes, low memory, still synced with your vault.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- Interactive demo -->
+    <section id="try" class="section">
+      <h2 class="section-title">Try it right here</h2>
+      <p class="section-sub">
+        This is a faithful, in-browser recreation of the plugin. Pick the highlighter or underline
+        from the toolbar, then drag across the text below.
+      </p>
+
+      <div class="demo-help">
+        <span><b>1.</b> Click <b>Highlighter</b> or <b>Underline</b> to open its colours.</span>
+        <span><b>2.</b> Drag across text to annotate.</span>
+        <span><b>3.</b> Click an annotation to recolour / convert / delete.</span>
+        <span><b>4.</b> Try the <b>eraser</b>, <b>undo</b> (Ctrl/Cmd+Z), and <b>Neon Glow</b>.</span>
+      </div>
+
+      <div id="demo-stage" class="demo-stage">
+        <article id="demo-note" class="demo-note reading">
+          <h2>Weekly research notes</h2>
+          <p>
+            Large language models have shifted from research curiosities to everyday tools. The most
+            capable systems now reason across long documents, call external tools, and hold context
+            over an entire working session. What used to take a bespoke pipeline is increasingly a
+            single well-phrased request.
+          </p>
+          <p>
+            Retrieval still matters. Grounding a model in your own notes keeps answers specific and
+            checkable, and it turns a general assistant into something that actually knows your
+            project. The interesting design question is no longer <em>whether</em> to retrieve, but
+            <strong>what to retrieve</strong> and how much context is worth its cost.
+          </p>
+          <blockquote>
+            The best interface is the one that disappears — you think about the work, not the tool.
+          </blockquote>
+          <ul>
+            <li>Annotations should never rewrite the source note.</li>
+            <li>Colour is information: reserve one hue per theme.</li>
+            <li>Undo must be instant, and forgiving.</li>
+          </ul>
+          <p>
+            Reading actively — marking the claims that matter, underlining the caveats — is how a
+            long note becomes a durable idea. Highlight the sentence above about interfaces, or
+            underline “what to retrieve”, and see how it feels.
+          </p>
+        </article>
+        <!-- Toolbar + popovers injected by demo.js -->
+      </div>
+      <p class="demo-foot">Everything here runs locally in your browser — nothing is uploaded.</p>
+    </section>
+
+    <!-- Install -->
+    <section id="install" class="section install">
+      <h2 class="section-title">Install in under a minute</h2>
+      <div class="install-grid">
+        <ol class="steps">
+          <li>
+            <span class="step-n">1</span>
+            <div>
+              <h3>Download the plugin</h3>
+              <p>Grab the ready-to-install folder as a zip.</p>
+              <a class="btn btn-primary" id="download-btn" href="inkless-highlighter.zip" download>
+                ⬇ Download inkless-highlighter.zip
+              </a>
+            </div>
+          </li>
+          <li>
+            <span class="step-n">2</span>
+            <div>
+              <h3>Unzip into your vault</h3>
+              <p>Extract it so the folder lands at:</p>
+              <code class="path">&lt;your-vault&gt;/.obsidian/plugins/inkless-highlighter/</code>
+              <p class="muted">It should contain <code>manifest.json</code>, <code>main.js</code> and <code>styles.css</code>.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-n">3</span>
+            <div>
+              <h3>Enable it</h3>
+              <p>In Obsidian: <b>Settings → Community plugins</b>, turn off Restricted mode if asked, then enable <b>Inkless Highlighter</b>. Open a note in Reading view and start highlighting.</p>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div>
+      <span class="brand-mark small" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="20" height="20"><rect width="32" height="32" rx="8" fill="currentColor"/><rect x="6" y="19" width="20" height="6" rx="2" fill="#ffe14d"/><path d="M9 15l6-6 4 4-6 6H9z" fill="#46f08c"/></svg>
+      </span>
+      Inkless Highlighter — MIT licensed.
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/igniyel/inkless-highlighter" rel="noopener">GitHub</a>
+      <a href="https://brijesh.fyi" rel="noopener">by brijesh</a>
+    </div>
+  </footer>
+
+  <script src="demo.js" defer></script>
+</body>
+</html>
