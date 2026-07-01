@@ -1,11 +1,5 @@
-/**
- * Settings tab: native Obsidian UI for every configurable option, a full
- * colour-palette editor, and data import / export / reset.
- *
- * The tab is a thin view over the plugin: it mutates `plugin.settings`, asks
- * the plugin to persist, and asks it to refresh the toolbar / open views when a
- * change affects what is currently on screen.
- */
+// The settings tab. It mutates plugin.settings, then asks the plugin to persist
+// and to refresh whatever is currently on screen.
 
 import {
   ButtonComponent,
@@ -16,6 +10,7 @@ import {
 } from "obsidian";
 import { DEFAULT_PALETTE, defaultSettings } from "./constants";
 import { genId } from "./engine";
+import { ConfirmModal } from "./ui";
 import type { FileHighlights, PaletteColor, ToolbarCorner } from "./types";
 import type ReadingHighlighterPlugin from "./main";
 
@@ -40,8 +35,6 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
     this.renderData(containerEl);
   }
 
-  /* ----- intro ----- */
-
   private renderHowTo(root: HTMLElement): void {
     const intro = root.createDiv({ cls: "rhl-settings-intro" });
     intro.createEl("p", {
@@ -63,8 +56,6 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
         "notes, so the underlying Markdown is never rewritten.",
     });
   }
-
-  /* ----- behaviour ----- */
 
   private renderBehaviour(root: HTMLElement): void {
     new Setting(root).setName("Behaviour").setHeading();
@@ -170,8 +161,6 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
       );
   }
 
-  /* ----- appearance ----- */
-
   private renderAppearance(root: HTMLElement): void {
     new Setting(root).setName("Appearance").setHeading();
 
@@ -274,8 +263,6 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
       );
   }
 
-  /* ----- toolbar ----- */
-
   private renderToolbar(root: HTMLElement): void {
     new Setting(root).setName("Toolbar").setHeading();
 
@@ -375,8 +362,6 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
         }),
       );
   }
-
-  /* ----- palette editor ----- */
 
   private renderPalette(root: HTMLElement): void {
     new Setting(root).setName("Colour palette").setHeading();
@@ -502,7 +487,7 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
     );
   }
 
-  /** Make sure the per-tool selected colours still exist after edits. */
+  // Make sure the per-tool selected colours still exist after edits.
   private ensureValidToolColours(): void {
     const ids = new Set(this.plugin.settings.palette.map((c) => c.id));
     const fallback = this.plugin.settings.palette[0]?.id ?? "c-yellow";
@@ -513,8 +498,6 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
       this.plugin.settings.lastUnderlineColorId = fallback;
     }
   }
-
-  /* ----- data ----- */
 
   private renderData(root: HTMLElement): void {
     new Setting(root).setName("Data").setHeading();
@@ -563,23 +546,24 @@ export class ReadingHighlighterSettingTab extends PluginSettingTab {
         b
           .setButtonText("Reset all")
           .setWarning()
-          .onClick(async () => {
-            if (!confirm("Delete all annotations and reset settings? This cannot be undone.")) {
-              return;
-            }
-            await this.plugin.resetAll(defaultSettings());
-            this.display();
-            new Notice("All annotations cleared and settings reset.");
+          .onClick(() => {
+            new ConfirmModal(this.plugin.app, {
+              title: "Reset everything",
+              message: "Delete all annotations and reset settings? This cannot be undone.",
+              confirmText: "Reset all",
+              warning: true,
+              onConfirm: async () => {
+                await this.plugin.resetAll(defaultSettings());
+                this.display();
+                new Notice("All annotations cleared and settings reset.");
+              },
+            }).open();
           }),
       );
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Small helpers                                                       */
-/* ------------------------------------------------------------------ */
-
-/** Coerce arbitrary colour strings to a 6-digit hex the colour picker accepts. */
+// Coerce arbitrary colour strings to a 6-digit hex the colour picker accepts.
 function normaliseHex(input: string): string {
   let h = input.trim();
   if (!h.startsWith("#")) h = "#" + h;
@@ -589,7 +573,7 @@ function normaliseHex(input: string): string {
   return /^#[0-9a-fA-F]{6}$/.test(h) ? h : "#9e9e9e";
 }
 
-/** Trigger a client-side download of a JSON-serialisable value. */
+// Trigger a client-side download of a JSON-serialisable value.
 function downloadJson(filename: string, data: unknown): void {
   const text = JSON.stringify(data, null, 2);
   const blob = new Blob([text], { type: "application/json" });
@@ -603,7 +587,7 @@ function downloadJson(filename: string, data: unknown): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** Open a file picker for a single JSON file and parse it. */
+// Open a file picker for a single JSON file and parse it.
 function pickJsonFile(onParsed: (data: unknown) => void): void {
   const input = document.createElement("input");
   input.type = "file";
@@ -624,7 +608,7 @@ function pickJsonFile(onParsed: (data: unknown) => void): void {
   input.click();
 }
 
-/** Accept either a full export blob or a bare file-highlights map. */
+// Accept either a full export blob or a bare file-highlights map.
 function extractHighlights(parsed: unknown): FileHighlights | null {
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;

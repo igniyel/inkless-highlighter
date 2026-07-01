@@ -1,22 +1,9 @@
-/**
- * Persistence for settings and per-file annotations.
- *
- * Annotations are stored as **per-file JSON shards** under the plugin folder,
- * with a small manifest (`index.json`) holding per-file metadata. This replaces
- * the old single data.json blob:
- *
- *  - **Incremental writes** — changing one note rewrites only that note's shard
- *    (a few KB), never the whole dataset.
- *  - **Lazy loading + LRU** — a file's annotations load on demand and idle files
- *    are evicted from memory, so RAM tracks the working set, not the vault.
- *  - **Indexed in memory** — each loaded file keeps `byId` / `byGroup` maps, so
- *    lookups, recolouring and deletion are O(1) instead of array scans.
- *
- * Shards live in the plugin folder, exactly where data.json did, so annotations
- * still travel with the vault through Obsidian Sync / Git. Settings stay in
- * data.json (small, and written through the host's saveData). Writes are
- * debounced; everything dirty is flushed on unload.
- */
+// Annotations are stored as per-file JSON shards under the plugin folder, with a
+// small manifest (index.json) of per-file metadata. Changing one note rewrites
+// only its shard; shards load lazily and idle ones are evicted, so memory tracks
+// the working set. Each loaded file keeps byId/byGroup maps for O(1) lookups.
+// Settings still live in data.json. Shards sit in the plugin folder, so they
+// travel with the vault the same way the old blob did.
 
 import { debounce, type Debouncer } from "obsidian";
 import { defaultSettings } from "./constants";
@@ -36,19 +23,14 @@ import type {
   PluginSettings,
 } from "./types";
 
-/** Schema of the data.json blob once highlights have moved to shards. */
-const DATA_SCHEMA = 2;
-/** Schema of an exported backup (kept stable for import compatibility). */
-const EXPORT_SCHEMA = 1;
-/** Folder (relative to the plugin dir) holding the manifest and shards. */
+const DATA_SCHEMA = 2; // data.json, now settings only
+const EXPORT_SCHEMA = 1; // exported backup, kept stable for imports
 const HL_SUBDIR = "highlights";
 const INDEX_NAME = "index.json";
-/** How many files' annotations stay resident before idle ones are evicted. */
-const HOT_CAP = 8;
+const HOT_CAP = 8; // files kept resident before idle ones are evicted
 
 type SaveFn = (data: PersistedData) => Promise<void>;
 
-/** A file's annotations held in memory, with its lookup indexes. */
 interface LoadedFile {
   fileId: string;
   path: string;
@@ -60,7 +42,7 @@ interface LoadedFile {
 
 export class HighlightStore {
   settings: PluginSettings;
-  /** True when this session migrated a legacy data.json into shards. */
+  // Set when this session migrated a legacy data.json blob into shards.
   migrated = false;
 
   private readonly adapter: StorageAdapter;
@@ -69,12 +51,9 @@ export class HighlightStore {
   private readonly save: SaveFn;
   private readonly flush: Debouncer<[], void>;
 
-  /** Manifest: fileId -> metadata (always resident). */
-  private index = new Map<string, FileMeta>();
+  private index = new Map<string, FileMeta>(); // fileId -> metadata, always resident
   private pathToId = new Map<string, string>();
-  /** Resident shards (insertion order doubles as LRU order). */
-  private cache = new Map<string, LoadedFile>();
-  /** De-dupes concurrent loads of the same shard. */
+  private cache = new Map<string, LoadedFile>(); // insertion order = LRU order
   private inflight = new Map<string, Promise<LoadedFile>>();
 
   private indexDirty = false;
@@ -93,11 +72,6 @@ export class HighlightStore {
     }, 500, true);
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Lifecycle                                                           */
-  /* ------------------------------------------------------------------ */
-
-  /** Load settings + manifest, migrating a legacy data.json blob if present. */
   async init(legacy: Partial<PersistedData> | null): Promise<void> {
     this.settings = this.mergeSettings(legacy?.settings);
     await this.ensureDir();
@@ -116,7 +90,7 @@ export class HighlightStore {
       return;
     }
 
-    // No manifest yet: migrate the old blob's highlights into shards (once).
+    // No manifest yet — migrate the old blob's highlights, once.
     const legacyHighlights = legacy?.highlights;
     if (legacyHighlights && Object.keys(legacyHighlights).length > 0) {
       await this.migrateLegacy(legacyHighlights);
@@ -129,13 +103,12 @@ export class HighlightStore {
     try {
       if (!(await this.adapter.exists(this.hlDir))) await this.adapter.mkdir(this.hlDir);
     } catch {
-      /* directory may already exist or be created concurrently */
+      // may already exist
     }
   }
 
-  /** One-time copy of legacy highlights into shards, with a safety backup. */
   private async migrateLegacy(raw: FileHighlights): Promise<void> {
-    // Keep the original blob verbatim so migration is reversible.
+    // Keep the original blob so the migration is reversible.
     await this.adapter
       .write(
         `${this.hlDir}/legacy-backup-${Date.now()}.json`,
@@ -152,14 +125,9 @@ export class HighlightStore {
       this.pathToId.set(path, fileId);
     }
     await this.writeIndex();
-    // Ask the host to drop highlights from data.json on the next settings save.
     this.migrated = true;
-    this.settingsDirty = true;
+    this.settingsDirty = true; // rewrite data.json without the highlights
   }
-
-  /* ------------------------------------------------------------------ */
-  /* Settings                                                            */
-  /* ------------------------------------------------------------------ */
 
   private mergeSettings(partial: Partial<PluginSettings> | undefined): PluginSettings {
     const base = defaultSettings();
@@ -173,16 +141,12 @@ export class HighlightStore {
           ? partial.palette
           : base.palette,
     };
-    // Toolbar placement is device-local (localStorage); never keep a synced copy.
+    // Toolbar placement is device-local; never keep a synced copy.
     delete (merged as unknown as Record<string, unknown>).toolbarPlacement;
     return merged;
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Queries                                                             */
-  /* ------------------------------------------------------------------ */
-
-  /** Annotations for a file that is already resident (else empty). */
+  // Records for a file that is already resident (empty otherwise).
   getForFile(path: string): HighlightRecord[] {
     const id = this.pathToId.get(path) ?? fileIdFor(path);
     const lf = this.cache.get(id);
@@ -191,7 +155,6 @@ export class HighlightStore {
     return lf.records;
   }
 
-  /** Ensure a file's shard is loaded, returning its records. */
   async ensureFileLoaded(path: string): Promise<HighlightRecord[]> {
     const lf = await this.load(path);
     return lf.records;
@@ -224,10 +187,6 @@ export class HighlightStore {
     return lf?.byId.get(id);
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Mutations (operate on a resident file)                              */
-  /* ------------------------------------------------------------------ */
-
   add(path: string, records: HighlightRecord[]): void {
     if (records.length === 0) return;
     const lf = this.acquire(path);
@@ -240,7 +199,6 @@ export class HighlightStore {
     this.markFileChanged(lf);
   }
 
-  /** Remove an entire group; returns the removed records. */
   removeGroup(path: string, groupId: string): HighlightRecord[] {
     const lf = this.cache.get(this.pathToId.get(path) ?? fileIdFor(path));
     if (!lf) return [];
@@ -258,7 +216,6 @@ export class HighlightStore {
     return removed;
   }
 
-  /** Apply a partial update to every record in a group. */
   updateGroup(path: string, groupId: string, patch: Partial<HighlightRecord>): void {
     const lf = this.cache.get(this.pathToId.get(path) ?? fileIdFor(path));
     if (!lf) return;
@@ -275,17 +232,13 @@ export class HighlightStore {
     if (changed) this.markFileChanged(lf);
   }
 
-  /* ------------------------------------------------------------------ */
-  /* File lifecycle                                                      */
-  /* ------------------------------------------------------------------ */
-
   async rename(oldPath: string, newPath: string): Promise<void> {
     const oldId = this.pathToId.get(oldPath);
     if (!oldId || (this.index.get(oldId)?.count ?? 0) === 0) return;
     const moving = (await this.load(oldPath)).records.slice();
     if (moving.length === 0) return;
 
-    // Merge into any annotations already at the destination.
+    // Merge into anything already at the destination.
     const existing = (await this.load(newPath)).records;
     const seen = new Set(existing.map((r) => r.id));
     const target = this.cache.get(fileIdFor(newPath));
@@ -305,14 +258,12 @@ export class HighlightStore {
     if (id) await this.removeFileEntirely(id, path);
   }
 
-  /** Replace all settings wholesale (used by the reset action). */
   setSettings(next: PluginSettings): void {
     this.settings = next;
     this.settingsDirty = true;
     this.flush();
   }
 
-  /** Remove every stored annotation (settings untouched). */
   async clearAll(): Promise<void> {
     const ids = Array.from(this.index.keys());
     for (const id of ids) {
@@ -325,11 +276,7 @@ export class HighlightStore {
     await this.writeIndex();
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Import / export                                                     */
-  /* ------------------------------------------------------------------ */
-
-  /** Assemble the whole dataset (loads every shard — used for backups). */
+  // Loads every shard — only used for a full backup.
   async exportAll(): Promise<PersistedData> {
     const highlights: FileHighlights = {};
     for (const meta of this.index.values()) {
@@ -340,7 +287,6 @@ export class HighlightStore {
     return { schema: EXPORT_SCHEMA, settings: this.settings, highlights };
   }
 
-  /** Merge imported annotations (by path); de-dupes on record id. */
   async importHighlights(data: FileHighlights, replace: boolean): Promise<number> {
     let added = 0;
     if (!data || typeof data !== "object") return 0;
@@ -366,11 +312,6 @@ export class HighlightStore {
     return added;
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Saving                                                              */
-  /* ------------------------------------------------------------------ */
-
-  /** Flush every dirty shard, the manifest, and (if needed) settings. */
   async persistNow(): Promise<void> {
     for (const lf of Array.from(this.cache.values())) {
       if (!lf.dirty) continue;
@@ -399,20 +340,14 @@ export class HighlightStore {
     this.evictIdle();
   }
 
-  /** Mark settings dirty and schedule a debounced flush. */
   scheduleSave(): void {
     this.settingsDirty = true;
     this.flush();
   }
 
-  /** Flag settings as needing a write on the next persist (no scheduling). */
   markSettingsDirty(): void {
     this.settingsDirty = true;
   }
-
-  /* ------------------------------------------------------------------ */
-  /* Internals: indexes, LRU, shard I/O                                  */
-  /* ------------------------------------------------------------------ */
 
   private indexGroup(lf: LoadedFile, r: HighlightRecord): void {
     let set = lf.byGroup.get(r.groupId);
@@ -434,7 +369,6 @@ export class HighlightStore {
 
   private markFileChanged(lf: LoadedFile): void {
     lf.dirty = true;
-    // Keep the manifest count fresh even before the shard is written.
     this.index.set(lf.fileId, {
       path: lf.path,
       count: lf.records.length,
@@ -446,7 +380,6 @@ export class HighlightStore {
     this.flush();
   }
 
-  /** Resident file for a path, creating an empty one for a brand-new file. */
   private acquire(path: string): LoadedFile | null {
     const id = this.pathToId.get(path) ?? fileIdFor(path);
     const cached = this.cache.get(id);
@@ -454,11 +387,11 @@ export class HighlightStore {
       this.touch(id);
       return cached;
     }
-    // Refuse to fabricate an empty file over an existing-but-unloaded shard,
-    // which would clobber it on the next flush. Callers must ensureFileLoaded
-    // first; in practice the active note is always loaded before it is mutated.
+    // Don't fabricate an empty file over an existing-but-unloaded shard — it
+    // would clobber it on the next flush. Callers load first (the active note
+    // always is), so this shouldn't happen.
     if (this.index.has(id)) {
-      console.error(`[inkless-highlighter] mutated unloaded file ${path}; skipped to avoid data loss`);
+      console.error(`[inkless-highlighter] mutated unloaded file ${path}; skipped`);
       return null;
     }
     const lf = this.makeLoaded(id, path, []);
@@ -506,7 +439,6 @@ export class HighlightStore {
     return task;
   }
 
-  /** Move a file to the most-recently-used end of the cache. */
   private touch(id: string): void {
     const lf = this.cache.get(id);
     if (!lf) return;
@@ -514,7 +446,6 @@ export class HighlightStore {
     this.cache.set(id, lf);
   }
 
-  /** Drop the least-recently-used clean files once over the hot cap. */
   private evictIdle(): void {
     while (this.cache.size > HOT_CAP) {
       let removed = false;

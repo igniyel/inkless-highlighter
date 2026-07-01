@@ -1,11 +1,6 @@
-/**
- * User interface: a floating toolbar that appears in Reading view, a palette /
- * parameter popover opened from the tool buttons, and a small management
- * popover shown when an existing annotation is clicked.
- *
- * The UI never owns persisted state; it reads from and calls back into the
- * host (the plugin), which is the single source of truth.
- */
+// The floating toolbar, the palette/parameter popover, and the small popover for
+// managing an existing annotation. The UI owns no persisted state — it reads and
+// calls back into the host (the plugin).
 
 import { App, Modal, Platform, Setting, setIcon, setTooltip } from "obsidian";
 import { brighten, genId, rgba } from "./engine";
@@ -17,7 +12,7 @@ import type {
   ToolbarPlacement,
 } from "./types";
 
-/** Contract the plugin fulfils so the UI can stay decoupled. */
+// What the plugin provides so the UI can stay decoupled.
 export interface UIHost {
   readonly app: App;
   settings: PluginSettings;
@@ -25,30 +20,22 @@ export interface UIHost {
   getActiveTool(): ActiveTool;
   setActiveTool(tool: ActiveTool): void;
 
-  /** Resolve a palette colour id to a hex string (with sensible fallback). */
   resolveColor(colorId: string): string;
   getToolColorId(tool: ToolType): string;
   setToolColorId(tool: ToolType, colorId: string): void;
-  /** Remove a colour from the palette, repairing any selection that used it. */
   deletePaletteColor(colorId: string): void;
 
-  /** Debounced persistence of settings. */
   saveSettings(): void;
-  /** Open the plugin's settings tab. */
   openSettings(): void;
 
-  /** Device-local toolbar placement (not synced across devices). */
   getToolbarPlacement(): ToolbarPlacement;
-  /** Persist the toolbar placement for this device. */
   saveToolbarPlacement(): void;
 
-  /** Undo / redo the most recent annotation changes in the active note. */
   undo(): void;
   redo(): void;
   canUndo(): boolean;
   canRedo(): boolean;
 
-  /** Management actions, operating on a clicked wrapper element. */
   recolorAnnotation(el: HTMLElement, colorId: string): void;
   switchAnnotationType(el: HTMLElement): void;
   deleteAnnotationEl(el: HTMLElement): void;
@@ -70,23 +57,13 @@ const ICONS = {
   redo: "redo-2",
 };
 
-/** How long a press must be held (ms) before it counts as a long-press. */
 const LONG_PRESS_MS = 480;
-/** Movement (px) that cancels a long-press, treating it as a scroll instead. */
-const LONG_PRESS_SLOP = 10;
+const LONG_PRESS_SLOP = 10; // px of movement that turns a press into a scroll
 
-/* ------------------------------------------------------------------ */
-/* Platform helpers                                                    */
-/* ------------------------------------------------------------------ */
-
-/** True on Obsidian's mobile app (phone or tablet, including iPad). */
+// True on Obsidian's mobile app (phone or tablet, including iPad).
 export function isTouch(): boolean {
   return Platform.isMobile === true;
 }
-
-/* ------------------------------------------------------------------ */
-/* Shared popover plumbing                                             */
-/* ------------------------------------------------------------------ */
 
 interface OpenPopover {
   el: HTMLElement;
@@ -109,7 +86,6 @@ function positionNear(
   preferAbove: boolean,
   preferLeft: boolean,
 ): void {
-  // Make sure we can measure it.
   popover.style.visibility = "hidden";
   popover.style.left = "0px";
   popover.style.top = "0px";
@@ -140,18 +116,13 @@ function positionNear(
   popover.style.visibility = "visible";
 }
 
-/* ------------------------------------------------------------------ */
-/* Floating toolbar                                                    */
-/* ------------------------------------------------------------------ */
-
 export class Toolbar {
   readonly el: HTMLElement;
   private host: UIHost;
   private buttons = new Map<string, HTMLElement>();
   private dragCleanup: (() => void) | null = null;
   private visible = false;
-  /** Timestamp of the last touch gesture, so we can ignore the synthetic click. */
-  private lastToolTouch = 0;
+  private lastToolTouch = 0; // so we can ignore the synthetic click after a tap
 
   constructor(host: UIHost) {
     this.host = host;
@@ -159,17 +130,15 @@ export class Toolbar {
     this.el.className = "rhl-toolbar";
     if (isTouch()) this.el.classList.add("is-touch");
     this.el.setAttribute("role", "toolbar");
-    // No aria-label on the container: Obsidian renders aria-label as a hover
-    // tooltip, and a toolbar-wide "Inkless Highlighter" bubble appears clipped
-    // behind the screen edge. The individual buttons carry their own labels.
-    // The tool buttons use right-click / long-press themselves, so suppress
-    // the OS context menu over the whole toolbar.
+    // No aria-label on the container: Obsidian turns aria-label into a hover
+    // tooltip, and a toolbar-wide one shows clipped at the screen edge. Each
+    // button carries its own label instead. The tool buttons handle right-click
+    // and long-press, so suppress the OS context menu here.
     this.el.addEventListener("contextmenu", (ev) => ev.preventDefault());
     document.body.appendChild(this.el);
     this.build();
     this.applyPlacement();
     this.el.style.display = "none";
-    // Keep the toolbar on-screen when the window resizes or the device rotates.
     window.addEventListener("resize", this.onViewportChange);
     window.addEventListener("orientationchange", this.onViewportChange);
   }
@@ -245,12 +214,8 @@ export class Toolbar {
     return btn;
   }
 
-  /**
-   * A drawing-tool button (highlighter / underline). It carries a colour bar
-   * and responds to three gestures:
-   *   - mouse click / right-click (roles configurable in settings),
-   *   - touch tap (select the tool) and long-press (open colours & options).
-   */
+  // Highlighter / underline button: carries a colour bar and responds to mouse
+  // click (+ right-click), and on touch to tap (select) / long-press (options).
   private addToolButton(
     key: "highlight" | "underline",
     icon: string,
@@ -271,8 +236,7 @@ export class Toolbar {
     btn.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      // A touch gesture already handled this; ignore the synthetic click.
-      if (Date.now() - this.lastToolTouch < 700) return;
+      if (Date.now() - this.lastToolTouch < 700) return; // a touch already handled it
       this.onToolPrimary(tool, ev);
     });
     btn.addEventListener("contextmenu", (ev) => this.onToolSecondary(tool, ev));
@@ -283,7 +247,6 @@ export class Toolbar {
     return btn;
   }
 
-  /** Device-aware hint for a drawing-tool button. */
   private toolTooltip(name: string): string {
     if (isTouch()) {
       return `${name} — tap to use · long-press for colours & options`;
@@ -294,7 +257,7 @@ export class Toolbar {
       : `${name} — click for colours & options · right-click to use`;
   }
 
-  /** Touch: short tap selects the tool; a sustained press opens its options. */
+  // Touch: a short tap selects the tool, a sustained press opens its options.
   private attachLongPress(btn: HTMLElement, tool: ToolType): void {
     let timer = 0;
     let startX = 0;
@@ -325,7 +288,7 @@ export class Toolbar {
         try {
           (navigator as Navigator & { vibrate?: (n: number) => void }).vibrate?.(10);
         } catch {
-          /* haptics are best-effort */
+          // haptics are best-effort
         }
       }, LONG_PRESS_MS);
     });
@@ -348,9 +311,8 @@ export class Toolbar {
       this.lastToolTouch = Date.now();
       if (longFired) {
         longFired = false;
-        return; // the press already opened the options popover
+        return; // the press already opened the options
       }
-      // A plain tap simply arms (or disarms) the tool, ready to drag.
       closeCurrentPopover();
       const current = this.host.getActiveTool();
       this.host.setActiveTool(current === tool ? null : tool);
@@ -364,13 +326,11 @@ export class Toolbar {
     });
   }
 
-  /** Primary mouse button on a tool icon (left, unless roles are swapped). */
   private onToolPrimary(tool: ToolType, ev: MouseEvent): void {
     const action = this.host.settings.swapClickRoles ? "select" : "palette";
     this.handleToolAction(tool, action, ev.currentTarget as HTMLElement);
   }
 
-  /** Secondary mouse button on a tool icon (right, unless roles are swapped). */
   private onToolSecondary(tool: ToolType, ev: MouseEvent): void {
     ev.preventDefault();
     ev.stopPropagation();
@@ -378,10 +338,8 @@ export class Toolbar {
     this.handleToolAction(tool, action, ev.currentTarget as HTMLElement);
   }
 
-  /**
-   * Route a tool-button gesture. "select" just arms (or toggles off) the tool;
-   * "palette" arms it and opens its colour / parameters popover.
-   */
+  // "select" just arms (or toggles off) the tool; "palette" arms it and opens
+  // its options popover.
   private handleToolAction(
     tool: ToolType,
     action: "palette" | "select",
@@ -394,7 +352,6 @@ export class Toolbar {
       this.render();
       return;
     }
-    // "palette": arm the tool and show its popover (toggle if already open).
     if (active !== tool) {
       this.host.setActiveTool(tool);
       this.openPalette(tool, anchor);
@@ -416,7 +373,6 @@ export class Toolbar {
     positionNear(currentPopover.el, rect, preferAbove, preferLeft);
   }
 
-  /** Re-paint active state and colour bars. */
   render(): void {
     const active = this.host.getActiveTool();
     (["highlight", "underline", "eraser", "cursor"] as const).forEach((key) => {
@@ -431,14 +387,11 @@ export class Toolbar {
       const bar = btn?.querySelector<HTMLElement>(".rhl-colorbar");
       if (bar) bar.style.backgroundColor = this.host.resolveColor(this.host.getToolColorId(tool));
     });
-    // Undo / redo enablement reflects the active note's history.
     const undoBtn = this.buttons.get("undo");
     if (undoBtn) (undoBtn as HTMLButtonElement).disabled = !this.host.canUndo();
     const redoBtn = this.buttons.get("redo");
     if (redoBtn) (redoBtn as HTMLButtonElement).disabled = !this.host.canRedo();
   }
-
-  /* ----- placement & dragging ----- */
 
   applyPlacement(): void {
     const p = this.host.getToolbarPlacement();
@@ -457,18 +410,15 @@ export class Toolbar {
     else s.right = `${pad}px`;
   }
 
-  /**
-   * If the toolbar was dragged to a manual position, keep that position inside
-   * the current viewport. Called on show, on resize, and on device rotation, so
-   * a position saved in one orientation never strands the toolbar off-screen in
-   * another. Corner-docked toolbars need no clamping (they hug an edge already).
-   */
+  // Keep a dragged position inside the viewport (on show, resize and rotation),
+  // so a spot saved in one orientation never strands the toolbar off-screen.
+  // Corner-docked toolbars already hug an edge and need no clamping.
   clampIntoView(): void {
     const p = this.host.getToolbarPlacement();
     if (p.x === null || p.y === null) return;
     const w = this.el.offsetWidth;
     const h = this.el.offsetHeight;
-    if (w === 0 || h === 0) return; // not laid out yet (e.g. hidden)
+    if (w === 0 || h === 0) return; // not laid out yet (hidden)
     const margin = 8;
     const maxX = Math.max(margin, window.innerWidth - w - margin);
     const maxY = Math.max(margin, window.innerHeight - h - margin);
@@ -520,8 +470,6 @@ export class Toolbar {
     this.dragCleanup = () => handle.removeEventListener("pointerdown", onDown);
   }
 
-  /* ----- visibility ----- */
-
   setVisible(visible: boolean): void {
     if (visible === this.visible) return;
     this.visible = visible;
@@ -544,27 +492,16 @@ export class Toolbar {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Swatch grid (shared by both popovers)                               */
-/* ------------------------------------------------------------------ */
-
 interface SwatchHandlers {
-  /** Currently selected colour id, if the grid should ring one. */
   selectedId?: () => string | null;
-  /** Called when a swatch is chosen. */
   onPick: (id: string) => void;
-  /** Whether to re-ring the grid after a pick (false when the popover closes). */
   repaintAfterPick: boolean;
-  /** Called after a brand-new colour is added through the "+" tile. */
   onAdded?: (id: string) => void;
-  /** Called after the palette changes in place (e.g. a colour is deleted). */
-  onChanged?: () => void;
+  onChanged?: () => void; // after a colour is deleted
 }
 
-/**
- * Render the palette as a grid of swatches followed by a dashed "+" tile that
- * adds a new, named colour. Returns a `paint` function that re-renders in place.
- */
+// The palette grid: swatches (each with a hover delete badge) plus a dashed "+"
+// tile to add a colour. Returns a paint() that re-renders in place.
 function buildSwatchGrid(
   parent: HTMLElement,
   host: UIHost,
@@ -588,8 +525,6 @@ function buildSwatchGrid(
         handlers.onPick(c.id);
         if (handlers.repaintAfterPick) paint();
       });
-      // A little delete affordance in the corner, shown on hover, so a colour
-      // can be removed straight from the palette without opening settings.
       if (canDelete) {
         const del = sw.createSpan({ cls: "rhl-swatch-del" });
         setIcon(del, "x");
@@ -604,7 +539,6 @@ function buildSwatchGrid(
         });
       }
     }
-    // The "+" tile: an inner dashed border with a plus, for adding a colour.
     const add = grid.createEl("button", { cls: "rhl-swatch rhl-swatch-add" });
     add.type = "button";
     setIcon(add, ICONS.add);
@@ -622,10 +556,6 @@ function buildSwatchGrid(
   paint();
   return { grid, paint };
 }
-
-/* ------------------------------------------------------------------ */
-/* Add-colour modal                                                    */
-/* ------------------------------------------------------------------ */
 
 class AddColorModal extends Modal {
   private name = "";
@@ -689,9 +619,40 @@ class AddColorModal extends Modal {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Palette / parameters popover                                        */
-/* ------------------------------------------------------------------ */
+interface ConfirmOptions {
+  title: string;
+  message: string;
+  confirmText?: string;
+  warning?: boolean;
+  onConfirm: () => void;
+}
+
+// Used instead of the browser confirm(), which is unreliable on mobile.
+export class ConfirmModal extends Modal {
+  constructor(app: App, private readonly opts: ConfirmOptions) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl, titleEl } = this;
+    titleEl.setText(this.opts.title);
+    contentEl.createEl("p", { cls: "rhl-modal-note", text: this.opts.message });
+    new Setting(contentEl)
+      .addButton((b) => {
+        b.setButtonText(this.opts.confirmText ?? "Confirm").onClick(() => {
+          this.close();
+          this.opts.onConfirm();
+        });
+        if (this.opts.warning) b.setWarning();
+        else b.setCta();
+      })
+      .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()));
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
 
 function buildPalettePopover(
   host: UIHost,
@@ -715,7 +676,6 @@ function buildPalettePopover(
         : "Pick a colour, then drag across text to underline it.",
   });
 
-  // Swatches with the inline "add colour" tile.
   let updatePreview = () => {};
   buildSwatchGrid(el, host, {
     selectedId: () => host.getToolColorId(tool),
@@ -733,13 +693,11 @@ function buildPalettePopover(
       onChange();
     },
     onChanged: () => {
-      // A colour was deleted from the palette; refresh preview + colour bar.
       updatePreview();
       onChange();
     },
   });
 
-  // Tool-specific controls.
   const controls = el.createDiv({ cls: "rhl-popover-controls" });
 
   if (tool === "highlight") {
@@ -792,8 +750,7 @@ function buildPalettePopover(
     });
   }
 
-  // Emphasis toggle: a neon glow for highlights, a brighter colour for
-  // underlines. They are independent defaults, one per tool.
+  // Neon glow for highlights, brighter colour for underlines — separate defaults.
   const isHighlight = tool === "highlight";
   const getEmphasis = () =>
     isHighlight ? host.settings.neonEffect : host.settings.brightUnderline;
@@ -819,7 +776,6 @@ function buildPalettePopover(
     updatePreview();
   });
 
-  // Live preview.
   const preview = el.createDiv({ cls: "rhl-preview" });
   preview.setText("The quick brown fox");
   updatePreview = () => {
@@ -832,7 +788,6 @@ function buildPalettePopover(
         s.boxShadow = `0 0 4px ${rgba(color, 0.95)}, 0 0 10px ${rgba(color, 0.55)}`;
       }
     } else {
-      // Brighter underlines change only the line colour — never a background.
       s.textDecoration = "underline";
       s.textDecorationColor = host.settings.brightUnderline ? brighten(color) : color;
       s.textDecorationThickness = `${host.settings.underline.thickness}px`;
@@ -846,10 +801,7 @@ function buildPalettePopover(
   return finishPopover(el);
 }
 
-/* ------------------------------------------------------------------ */
-/* Annotation management popover                                       */
-/* ------------------------------------------------------------------ */
-
+// Opened when an existing annotation is clicked with no tool armed.
 export function openAnnotationPopover(host: UIHost, target: HTMLElement): void {
   closeCurrentPopover();
   const type = (target.getAttribute("data-rhl-type") as ToolType) ?? "highlight";
@@ -902,10 +854,6 @@ export function openAnnotationPopover(host: UIHost, target: HTMLElement): void {
   positionNear(el, rect, preferAbove, false);
 }
 
-/* ------------------------------------------------------------------ */
-/* Popover lifecycle helper                                            */
-/* ------------------------------------------------------------------ */
-
 function finishPopover(el: HTMLElement): OpenPopover {
   const onDocPointer = (ev: PointerEvent) => {
     if (!el.contains(ev.target as Node)) closeCurrentPopover();
@@ -913,7 +861,7 @@ function finishPopover(el: HTMLElement): OpenPopover {
   const onKey = (ev: KeyboardEvent) => {
     if (ev.key === "Escape") closeCurrentPopover();
   };
-  // Defer attaching so the opening click doesn't immediately close it.
+  // Defer, so the click that opened the popover doesn't immediately close it.
   window.setTimeout(() => {
     document.addEventListener("pointerdown", onDocPointer, true);
     document.addEventListener("keydown", onKey, true);
@@ -929,7 +877,6 @@ function finishPopover(el: HTMLElement): OpenPopover {
   return popover;
 }
 
-/** Exposed so the plugin can dismiss popovers on unload / view change. */
 export function dismissPopovers(): void {
   closeCurrentPopover();
 }

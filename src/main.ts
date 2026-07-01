@@ -1,22 +1,13 @@
-/**
- * Plugin entry point.
- *
- * Responsibilities:
- *  - Load / save persisted data through HighlightStore.
- *  - Re-apply stored annotations onto every rendered note via a Markdown
- *    post-processor (the only reliable hook for Reading view, including lazy
- *    rendering of long notes).
- *  - Turn a drag-selection in Reading view into a new annotation (no hotkeys).
- *  - Manage existing annotations (recolour / convert / copy / delete).
- *  - Own the floating toolbar and the active-tool state, and expose the UIHost
- *    contract the UI calls back into.
- */
+// Plugin entry point: loads the store, re-applies annotations on every render
+// through a Markdown post-processor, turns drag-selections into annotations, and
+// owns the toolbar and active-tool state.
 
 import {
   MarkdownView,
   Notice,
   Plugin,
   TFile,
+  normalizePath,
   type App,
   type DataAdapter,
   type MarkdownPostProcessorContext,
@@ -33,6 +24,7 @@ import { HighlightStore } from "./store";
 import type { StorageAdapter } from "./persistence";
 import { ReadingHighlighterSettingTab } from "./settings";
 import {
+  ConfirmModal,
   Toolbar,
   dismissPopovers,
   openAnnotationPopover,
@@ -53,7 +45,7 @@ import type {
   ToolbarPlacement,
 } from "./types";
 
-/** Minimal structural types for semi-private Obsidian APIs we touch. */
+// Minimal structural types for semi-private Obsidian APIs we touch.
 interface AppWithSetting extends App {
   setting?: { open(): void; openTabById(id: string): void };
 }
@@ -61,45 +53,43 @@ interface Rerenderable {
   rerender?(full?: boolean): void;
 }
 
-/** Adapts Obsidian's vault DataAdapter to the store's StorageAdapter contract. */
+// Bridges the store's plain StorageAdapter contract to Obsidian's vault adapter.
 class VaultStorageAdapter implements StorageAdapter {
   constructor(private readonly adapter: DataAdapter) {}
   async read(path: string): Promise<string | null> {
+    const p = normalizePath(path);
     try {
-      if (!(await this.adapter.exists(path))) return null;
-      return await this.adapter.read(path);
+      if (!(await this.adapter.exists(p))) return null;
+      return await this.adapter.read(p);
     } catch {
       return null;
     }
   }
   write(path: string, data: string): Promise<void> {
-    return this.adapter.write(path, data);
+    return this.adapter.write(normalizePath(path), data);
   }
   async remove(path: string): Promise<void> {
     try {
-      await this.adapter.remove(path);
+      await this.adapter.remove(normalizePath(path));
     } catch {
-      /* already gone */
+      // already gone
     }
   }
   exists(path: string): Promise<boolean> {
-    return this.adapter.exists(path);
+    return this.adapter.exists(normalizePath(path));
   }
   async mkdir(path: string): Promise<void> {
     try {
-      await this.adapter.mkdir(path);
+      await this.adapter.mkdir(normalizePath(path));
     } catch {
-      /* already exists */
+      // already exists
     }
   }
 }
 
-/**
- * One reversible change to a single annotation group, expressed as the group's
- * full record set before and after. An empty array means "the group did not
- * exist" — so creation is `before: []`, deletion is `after: []`, and an edit
- * (recolour / convert) carries both states.
- */
+// A reversible change to one group: the group's records before and after.
+// An empty array means the group didn't exist, so a create is before:[] and a
+// delete is after:[].
 interface HistoryOp {
   groupId: string;
   before: HighlightRecord[];
@@ -108,28 +98,22 @@ interface HistoryOp {
 
 export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   store!: HighlightStore;
-  /** Same object reference as store.settings, so edits propagate both ways. */
+  // Same object reference as store.settings, so edits propagate both ways.
   settings!: PluginSettings;
-  /** Device-local toolbar placement (kept out of synced data). */
+  // Device-local toolbar placement (kept out of synced data).
   private toolbarPlacement!: ToolbarPlacement;
   private toolbar!: Toolbar;
   private activeTool: ActiveTool = null;
-  /** Timestamp of the last successful capture, to swallow the trailing click. */
+  // Timestamp of the last successful capture, to swallow the trailing click.
   private lastCaptureAt = 0;
 
-  /**
-   * In-memory undo/redo history, one stack pair per file. Not persisted: it is
-   * renewed whenever a note's tab is (re)opened, and capped per file.
-   */
+  // In-memory undo/redo history, one stack pair per file. Not persisted: it is
+  // renewed whenever a note's tab is (re)opened, and capped per file.
   private history = new Map<string, { undo: HistoryOp[]; redo: HistoryOp[] }>();
-  /** Set while undo/redo is replaying, so the replay itself isn't recorded. */
+  // Set while undo/redo is replaying, so the replay itself isn't recorded.
   private applyingHistory = false;
-  /** Most undoable steps kept per file. */
+  // Most undoable steps kept per file.
   private static readonly MAX_HISTORY = 50;
-
-  /* ------------------------------------------------------------------ */
-  /* Lifecycle                                                           */
-  /* ------------------------------------------------------------------ */
 
   async onload(): Promise<void> {
     const loaded = await this.loadData();
@@ -144,7 +128,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     if (this.store.migrated) {
       try {
         await this.store.persistNow();
-        new Notice("Inkless Highlighter: upgraded annotation storage.");
+        new Notice("Annotation storage upgraded.");
       } catch (e) {
         console.error("[inkless-highlighter] migration flush failed", e);
       }
@@ -218,10 +202,6 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     }
   }
 
-  /* ------------------------------------------------------------------ */
-  /* UIHost contract                                                     */
-  /* ------------------------------------------------------------------ */
-
   getActiveTool(): ActiveTool {
     return this.activeTool;
   }
@@ -271,13 +251,11 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     this.toolbar?.render();
   }
 
-  /* ----- device-local toolbar placement ----- */
-
   getToolbarPlacement(): ToolbarPlacement {
     return this.toolbarPlacement;
   }
 
-  /** Persist the toolbar placement to this device only (never synced). */
+  // Persist the toolbar placement to this device only (never synced).
   saveToolbarPlacement(): void {
     const key = this.toolbarStorageKey();
     try {
@@ -287,7 +265,6 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
         window.localStorage.setItem(this.fallbackKey(key), JSON.stringify(this.toolbarPlacement));
       }
     } catch {
-      /* localStorage may be unavailable; placement just won't persist. */
     }
   }
 
@@ -295,15 +272,13 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     return `${this.manifest.id}:toolbar-placement`;
   }
 
-  /**
-   * window.localStorage is shared across vaults on a device, so namespace the
-   * fallback key by vault name. (App.loadLocalStorage already scopes per vault.)
-   */
+  // window.localStorage is shared across vaults on a device, so namespace the
+  // fallback key by vault name. (App.loadLocalStorage already scopes per vault.)
   private fallbackKey(key: string): string {
     return `${key}:${this.app.vault.getName()}`;
   }
 
-  /** Read the per-device placement, falling back to a sane default. */
+  // Read the per-device placement, falling back to a sane default.
   private loadToolbarPlacement(): ToolbarPlacement {
     const fallback = defaultToolbarPlacement();
     const key = this.toolbarStorageKey();
@@ -372,7 +347,20 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     const path = this.activeFilePath();
     const groupId = el.getAttribute(ATTR_GROUP);
     if (!path || !groupId) return;
-    if (this.settings.confirmDelete && !confirm("Delete this annotation?")) return;
+    if (this.settings.confirmDelete) {
+      new ConfirmModal(this.app, {
+        title: "Delete annotation",
+        message: "Remove this annotation?",
+        confirmText: "Delete",
+        warning: true,
+        onConfirm: () => this.removeAnnotationGroup(path, groupId),
+      }).open();
+    } else {
+      this.removeAnnotationGroup(path, groupId);
+    }
+  }
+
+  private removeAnnotationGroup(path: string, groupId: string): void {
     const removed = this.store.removeGroup(path, groupId);
     removed.forEach((r) => unwrapById(document, r.id));
     if (removed.length) this.recordHistory(path, groupId, cloneRecords(removed), []);
@@ -387,10 +375,6 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     const text = parts.join(" ").replace(/\s+/g, " ").trim();
     void this.copyToClipboard(text, "Copied annotation text.");
   }
-
-  /* ------------------------------------------------------------------ */
-  /* Undo / redo                                                         */
-  /* ------------------------------------------------------------------ */
 
   canUndo(): boolean {
     const path = this.activeFilePath();
@@ -434,7 +418,7 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     this.toolbar?.render();
   }
 
-  /** Record one undoable step (skipped while a replay is in progress). */
+  // Record one undoable step (skipped while a replay is in progress).
   private recordHistory(
     path: string,
     groupId: string,
@@ -455,15 +439,13 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     this.toolbar?.render();
   }
 
-  /** Deep copy of all records currently in a group, for a history snapshot. */
+  // Deep copy of all records currently in a group, for a history snapshot.
   private snapshotGroup(path: string, groupId: string): HighlightRecord[] {
     return cloneRecords(this.store.getForFile(path).filter((r) => r.groupId === groupId));
   }
 
-  /**
-   * Force a group into a given set of records: removes whatever is there now
-   * (store + DOM) and, if `target` is non-empty, re-adds and re-renders it.
-   */
+  // Force a group into a given set of records: removes whatever is there now
+  // (store + DOM) and, if `target` is non-empty, re-adds and re-renders it.
   private applyGroupState(path: string, groupId: string, target: HighlightRecord[]): void {
     const removed = this.store.removeGroup(path, groupId);
     removed.forEach((r) => unwrapById(document, r.id));
@@ -473,17 +455,13 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     this.renderRecordsInActiveView(path, copy);
   }
 
-  /** Paint a set of records into the active note's Reading view, if it is open. */
+  // Paint a set of records into the active note's Reading view, if it is open.
   private renderRecordsInActiveView(path: string, records: HighlightRecord[]): void {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!view || view.file?.path !== path) return;
     const root = view.containerEl.querySelector(READING_VIEW_SELECTOR) as HTMLElement | null;
     if (root) applyToContainer(root, records, this.settings);
   }
-
-  /* ------------------------------------------------------------------ */
-  /* Methods used by the settings tab                                    */
-  /* ------------------------------------------------------------------ */
 
   async persistSettings(): Promise<void> {
     this.store.markSettingsDirty();
@@ -518,10 +496,6 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     this.refreshReadingViews();
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Render path                                                         */
-  /* ------------------------------------------------------------------ */
-
   private async postProcess(
     el: HTMLElement,
     ctx: MarkdownPostProcessorContext,
@@ -542,10 +516,6 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
 
     applyToContainer(el, records, this.settings);
   }
-
-  /* ------------------------------------------------------------------ */
-  /* Create annotations from a selection                                 */
-  /* ------------------------------------------------------------------ */
 
   private onPointerUp(ev: PointerEvent): void {
     const tool = this.activeTool;
@@ -608,10 +578,6 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     if (!this.settings.stickyTool) this.setActiveTool(null);
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Click handling (manage / erase)                                     */
-  /* ------------------------------------------------------------------ */
-
   private onClick(ev: MouseEvent): void {
     const target = ev.target as HTMLElement | null;
     if (!target) return;
@@ -639,11 +605,9 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     openAnnotationPopover(this, wrapper);
   }
 
-  /**
-   * Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z redoes — but only in Reading view,
-   * where there is no editor undo to clash with, and never while typing in an
-   * input field.
-   */
+  // Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z redoes — but only in Reading view,
+  // where there is no editor undo to clash with, and never while typing in an
+  // input field.
   private onKeyDown(ev: KeyboardEvent): void {
     if (ev.key.toLowerCase() !== "z" || ev.altKey) return;
     if (!(ev.ctrlKey || ev.metaKey)) return;
@@ -664,10 +628,6 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     if (ev.shiftKey) this.redo();
     else this.undo();
   }
-
-  /* ------------------------------------------------------------------ */
-  /* Commands (registered without default hotkeys)                      */
-  /* ------------------------------------------------------------------ */
 
   private registerCommands(): void {
     this.addCommand({
@@ -800,10 +760,6 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     void this.copyToClipboard(md, `Copied ${order.length} annotation${order.length === 1 ? "" : "s"} as Markdown.`);
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Helpers                                                             */
-  /* ------------------------------------------------------------------ */
-
   private updateToolbarVisibility(): void {
     if (!this.toolbar) return;
     if (!this.settings.showToolbar) {
@@ -822,12 +778,12 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
     return view?.file?.path ?? null;
   }
 
-  /** Nearest rendered-Markdown root for an element, or the document body. */
+  // Nearest rendered-Markdown root for an element, or the document body.
   private rootFor(el: HTMLElement): HTMLElement {
     return (el.closest(READING_VIEW_SELECTOR) as HTMLElement | null) ?? document.body;
   }
 
-  /** Reflect the active tool on <body> so CSS can drive cursors and affordances. */
+  // Reflect the active tool on <body> so CSS can drive cursors and affordances.
   private setBodyState(tool: ActiveTool): void {
     const cls = document.body.classList;
     cls.remove("rhl-armed", "rhl-tool-highlight", "rhl-tool-underline", "rhl-tool-eraser");
@@ -846,15 +802,11 @@ export default class ReadingHighlighterPlugin extends Plugin implements UIHost {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Module-local helpers                                                */
-/* ------------------------------------------------------------------ */
-
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
-/** Deep copy a list of records so history snapshots can't alias live records. */
+// Deep copy a list of records so history snapshots can't alias live records.
 function cloneRecords(records: HighlightRecord[]): HighlightRecord[] {
   return records.map((r) => ({
     ...r,
