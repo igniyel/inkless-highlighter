@@ -1,15 +1,8 @@
-/**
- * Engine: turns a Reading-view text selection into a persistent, re-applicable
- * annotation, and re-applies stored annotations onto freshly rendered Markdown.
- *
- * Design: annotations are NON-DESTRUCTIVE. The Markdown file is never rewritten.
- * Each annotation is anchored with a W3C-style text quote (exact text + a short
- * prefix/suffix of surrounding context). On every render we search the rendered
- * text for that quote and wrap the matching characters in styled elements.
- *
- * All DOM mutation works by isolating and wrapping existing Text nodes — we
- * never inject HTML strings, so there is no XSS surface from note content.
- */
+// Turns a Reading-view selection into a stored annotation and re-applies stored
+// annotations onto rendered Markdown. Nothing is written to the note — each
+// annotation keeps a text-quote anchor (exact text + a little surrounding
+// context) and is re-found on every render. DOM work only wraps existing text
+// nodes, so note content can't inject markup.
 
 import {
   ATTR_GROUP,
@@ -22,11 +15,10 @@ import {
 } from "./constants";
 import type { HighlightRecord, PluginSettings } from "./types";
 
-/** Block-level elements we treat as anchoring units. */
 const BLOCK_SELECTOR =
   "p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, dd, dt, figcaption, .callout-title-inner";
 
-/** A contiguous run of selected text confined to one block. */
+// A run of selected text confined to one block.
 export interface CapturePart {
   block: HTMLElement;
   rawStart: number;
@@ -43,11 +35,6 @@ interface TextPiece {
   end: number;
 }
 
-/* ------------------------------------------------------------------ */
-/* Small utilities                                                     */
-/* ------------------------------------------------------------------ */
-
-/** Reasonably unique id without external deps. */
 export function genId(): string {
   return (
     Date.now().toString(36) +
@@ -57,12 +44,11 @@ export function genId(): string {
   );
 }
 
-/** Collapse internal whitespace and trim — the canonical anchor form. */
+// The canonical anchor form: collapse whitespace and trim.
 export function normStore(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
-/** Convert a #rgb / #rrggbb hex to an `rgba(...)` string with the given alpha. */
 export function rgba(hex: string, alpha: number): string {
   let h = hex.trim().replace(/^#/, "");
   if (h.length === 3) {
@@ -73,8 +59,7 @@ export function rgba(hex: string, alpha: number): string {
   }
   const int = parseInt(h, 16);
   if (h.length !== 6 || Number.isNaN(int)) {
-    // Fall back to a neutral, readable yellow if the hex is malformed.
-    return `rgba(255, 213, 79, ${clamp01(alpha)})`;
+    return `rgba(255, 213, 79, ${clamp01(alpha)})`; // fall back to a readable yellow
   }
   const r = (int >> 16) & 255;
   const g = (int >> 8) & 255;
@@ -87,7 +72,6 @@ function clamp01(n: number): number {
   return Math.min(1, Math.max(0, n));
 }
 
-/** Parse a #rgb / #rrggbb hex into 0–255 channels, or null if malformed. */
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   let h = hex.trim().replace(/^#/, "");
   if (h.length === 3) {
@@ -105,12 +89,8 @@ function toHex(n: number): string {
   return Math.round(Math.min(255, Math.max(0, n))).toString(16).padStart(2, "0");
 }
 
-/**
- * Return a brighter, more vivid version of a hex colour, used to emphasise
- * underlines. Works in HSL: it lifts saturation and keeps lightness in a
- * legible 0.5–0.7 band, so the line reads as "neon-bright" without ever
- * tinting the area behind the text.
- */
+// A more vivid version of a colour for the "brighter" underline: full-ish
+// saturation, lightness held in a legible 0.5–0.7 band.
 export function brighten(hex: string): string {
   const rgb = hexToRgb(hex);
   if (!rgb) return hex;
@@ -150,11 +130,7 @@ export function brighten(hex: string): string {
   return "#" + toHex((rr + m) * 255) + toHex((gg + m) * 255) + toHex((bb + m) * 255);
 }
 
-/* ------------------------------------------------------------------ */
-/* Text-node collection and offset maths                              */
-/* ------------------------------------------------------------------ */
-
-/** True if `node` lives inside a skipped element (code, or an existing wrapper). */
+// True if the node sits inside code (when skipping code) or an existing wrapper.
 function isSkipped(node: Node, skipCode: boolean): boolean {
   let el: HTMLElement | null = node.parentElement;
   while (el) {
@@ -165,7 +141,6 @@ function isSkipped(node: Node, skipCode: boolean): boolean {
   return false;
 }
 
-/** Collect the visible text nodes of `container` in document order. */
 function collectTextNodes(
   container: HTMLElement,
   skipCode: boolean,
@@ -194,11 +169,7 @@ function collectTextNodes(
   return { pieces, text };
 }
 
-/**
- * Raw character offset (within the collected text) of a DOM boundary point.
- * Handles boundaries that land in Text nodes (the common case) and degrades
- * gracefully for element boundaries.
- */
+// Offset of a DOM boundary point within the collected text.
 function rawOffsetOf(
   boundaryNode: Node,
   boundaryOffset: number,
@@ -230,15 +201,15 @@ function rawOffsetOf(
     } catch {
       startCmp = 1;
     }
-    if (startCmp >= 0) break; // whole piece is after the boundary
-    // Boundary lies strictly inside this piece.
+    if (startCmp >= 0) break;
     total += boundaryNode === p.node ? boundaryOffset : 0;
     break;
   }
   return total;
 }
 
-/** Build a whitespace-collapsed string plus a map back to raw offsets. */
+// Whitespace-collapsed copy of `text`, plus a map from each normalised index
+// back to its raw offset.
 function buildNorm(text: string): { norm: string; map: number[] } {
   const out: string[] = [];
   const map: number[] = [];
@@ -260,17 +231,12 @@ function buildNorm(text: string): { norm: string; map: number[] } {
   return { norm: out.join(""), map };
 }
 
-/** First normalised index whose raw offset is >= `raw`. */
 function rawToNorm(map: number[], raw: number): number {
   for (let i = 0; i < map.length; i++) {
     if (map[i] >= raw) return i;
   }
   return map.length;
 }
-
-/* ------------------------------------------------------------------ */
-/* Anchor matching                                                     */
-/* ------------------------------------------------------------------ */
 
 function commonSuffixLen(a: string, b: string): number {
   let i = 0;
@@ -284,15 +250,11 @@ function commonPrefixLen(a: string, b: string): number {
   return i;
 }
 
-/** Characters of matching context required to trust an occurrence. */
-const CTX_MIN_ABS = 8;
+const CTX_MIN_ABS = 8; // matching context chars needed to trust an occurrence
 
-/**
- * How many characters of the stored prefix/suffix actually match the text
- * around a candidate occurrence. The boundary space between context and the
- * annotated word is dropped first, because `prefix`/`suffix` are stored trimmed
- * while the rendered text keeps the separating space.
- */
+// How much of the stored prefix/suffix matches around a candidate. The single
+// word-boundary space is dropped first, since prefix/suffix are stored trimmed
+// but the rendered text keeps the space.
 function contextMatch(
   norm: string,
   s: number,
@@ -315,26 +277,14 @@ function contextMatch(
   return pm + sm;
 }
 
-/**
- * Is `matched` characters of context enough to believe this is the real spot?
- * With no stored context (a whole-block selection) there is nothing to check.
- * Otherwise require a solid run of matching context — enough to rule out a
- * different place that merely repeats the same words.
- */
 function contextConvincing(matched: number, want: number): boolean {
-  if (want === 0) return true;
+  if (want === 0) return true; // whole-block selection, nothing to check
   return matched >= Math.min(want, CTX_MIN_ABS);
 }
 
-/**
- * Locate `rec` within a normalised string. Returns the [start, end) range in
- * normalised coordinates, or null if not found.
- *
- * Critically, a match is accepted only when its surrounding context is
- * convincing. Obsidian runs the post-processor per rendered section, so without
- * this check the same record would be wrapped in *every* section that happens
- * to repeat its words — highlighting unrelated duplicates elsewhere in the note.
- */
+// Locate `rec` within a normalised string. A match is accepted only when its
+// context is convincing — Obsidian renders per section, so otherwise the same
+// record would get wrapped in every section that repeats its words.
 function findInNorm(
   norm: string,
   rec: HighlightRecord,
@@ -347,15 +297,12 @@ function findInNorm(
     starts.push(idx);
     idx = norm.indexOf(target, idx + 1);
   }
-  // The exact text is gone (the user edited it): re-anchor by surrounding
-  // context so the annotation survives instead of vanishing.
+  // Exact text is gone (the note was edited): re-anchor by context instead.
   if (starts.length === 0) return findFuzzy(norm, rec, target);
 
   const wantPrefix = normStore(rec.prefix);
   const wantSuffix = normStore(rec.suffix);
 
-  // Pick the occurrence whose context matches best (occurrence index breaks
-  // ties), then accept it only if that context clears the bar.
   let best = starts[0];
   let bestMatched = -1;
   let bestAdj = -Infinity;
@@ -373,26 +320,13 @@ function findInNorm(
   return { s: best, e: best + target.length };
 }
 
-/* ------------------------------------------------------------------ */
-/* Fuzzy re-anchoring (when the annotated text was edited)             */
-/* ------------------------------------------------------------------ */
-
-/** Minimum length of stored context before we trust it as a side anchor. */
 const ANCHOR_MIN = 4;
-/** How many context characters to use from each side as an anchor. */
 const ANCHOR_LEN = 24;
 
-/**
- * Re-locate an annotation whose exact text no longer exists, so an edit to the
- * annotated sentence does not make the highlight/underline disappear.
- *
- * It brackets the annotation between a left and a right anchor, choosing the
- * strongest available for each side: the stored surrounding context when there
- * is enough of it, otherwise the selection's own first / last word (which
- * usually survives when the middle is reworded). Every candidate is bounded by
- * a maximum span and scored toward the original length, so a stray match can't
- * swallow a huge stretch of text.
- */
+// Re-locate an annotation whose exact text is gone, so editing the sentence
+// doesn't make it vanish. Brackets the span between the strongest anchor on each
+// side (stored context, or the selection's own first/last word), bounded by a
+// max span and scored toward the original length.
 function findFuzzy(
   norm: string,
   rec: HighlightRecord,
@@ -407,9 +341,6 @@ function findFuzzy(
   const firstWord = words[0] ?? "";
   const lastWord = words.length > 1 ? words[words.length - 1] : "";
 
-  // Pick the strongest available anchor for each side independently: the stored
-  // surrounding context when there is enough of it, otherwise the selection's
-  // own first / last word (which usually survives a reword of the middle).
   let left = "";
   let includeLeft = false;
   if (wantPrefix.length >= ANCHOR_MIN) {
@@ -432,19 +363,14 @@ function findFuzzy(
   const hit = bracketBetween(norm, left, right, includeLeft, includeRight, targetLen, maxSpan);
   if (!hit) return null;
 
-  // Drop any whitespace the anchors left dangling at the edges.
   let { s, e } = hit;
   while (s < e && norm[s] === " ") s++;
   while (e > s && norm[e - 1] === " ") e--;
   return e > s ? { s, e } : null;
 }
 
-/**
- * Find a range delimited by a `left` and `right` anchor string. `includeLeft` /
- * `includeRight` decide whether each anchor is part of the range (end-word
- * bracket) or merely borders it (context bracket). Among valid candidates,
- * prefers the one whose length is closest to `targetLen`.
- */
+// Find a range between a left and right anchor. includeLeft/includeRight decide
+// whether each anchor is part of the range. Prefers the length closest to target.
 function bracketBetween(
   norm: string,
   left: string,
@@ -477,11 +403,6 @@ function bracketBetween(
   return best;
 }
 
-/* ------------------------------------------------------------------ */
-/* Wrapper element creation / styling                                  */
-/* ------------------------------------------------------------------ */
-
-/** Apply visual styles to an existing wrapper element from a record. */
 export function styleWrapper(
   el: HTMLElement,
   rec: HighlightRecord,
@@ -508,15 +429,13 @@ export function styleWrapper(
       shadows.push(`inset 0 0 0 1px ${rgba(rec.color, Math.min(1, rec.opacity + 0.4))}`);
     }
     if (rec.neon) {
-      // A soft outer halo in the annotation's own colour for the neon look.
       shadows.push(`0 0 4px ${rgba(rec.color, 0.95)}`, `0 0 10px ${rgba(rec.color, 0.55)}`);
     }
     if (shadows.length) el.style.boxShadow = shadows.join(", ");
   } else {
     el.style.backgroundColor = "transparent";
     el.style.textDecorationLine = "underline";
-    // "Brighter" underlines simply use a more vivid line colour. No glow or
-    // filter, so nothing is ever painted behind the text itself.
+    // "Brighter" only changes the line colour — nothing behind the text.
     el.style.textDecorationColor = rec.neon ? brighten(rec.color) : rec.color;
     el.style.textDecorationStyle = rec.underline?.style ?? "solid";
     el.style.textDecorationThickness = `${rec.underline?.thickness ?? 2}px`;
@@ -525,7 +444,6 @@ export function styleWrapper(
   el.setAttribute("aria-label", rec.note ? rec.note : `${rec.type} annotation`);
 }
 
-/** Create a fresh wrapper element for a record. */
 function createWrapperEl(rec: HighlightRecord, settings: PluginSettings): HTMLElement {
   const tag = rec.type === "underline" ? "span" : "mark";
   const el = document.createElement(tag);
@@ -533,16 +451,8 @@ function createWrapperEl(rec: HighlightRecord, settings: PluginSettings): HTMLEl
   return el;
 }
 
-/* ------------------------------------------------------------------ */
-/* Range wrapping                                                      */
-/* ------------------------------------------------------------------ */
-
-/**
- * Wrap the characters [rawStart, rawEnd) of `container` (in collected-text
- * coordinates) using `makeWrapper`. A range that spans several inline elements
- * yields several adjacent wrappers that share the record id. Returns the number
- * of wrapper elements created.
- */
+// Wrap characters [rawStart, rawEnd) of `container`. A range crossing inline
+// elements yields several adjacent wrappers sharing the record id.
 export function wrapRange(
   container: HTMLElement,
   rawStart: number,
@@ -570,29 +480,23 @@ export function wrapRange(
       w.appendChild(target);
       wrapped++;
     } catch {
-      // Skip pieces that fail to split (detached/odd nodes) rather than throw.
+      // skip nodes that won't split rather than throw
     }
   }
   return wrapped;
 }
 
-/* ------------------------------------------------------------------ */
-/* Capturing a selection                                               */
-/* ------------------------------------------------------------------ */
-
-/** Nearest block-level ancestor used as an anchoring unit. */
 function closestBlock(node: Node, root: HTMLElement): HTMLElement {
   let el: HTMLElement | null = node instanceof HTMLElement ? node : node.parentElement;
   while (el && el !== root) {
     if (el.matches?.(BLOCK_SELECTOR)) return el;
     el = el.parentElement;
   }
-  // Fall back to the closest element child of the root, else the root itself.
-  let cur: HTMLElement | null = node instanceof HTMLElement ? node : node.parentElement;
+  const cur: HTMLElement | null = node instanceof HTMLElement ? node : node.parentElement;
   return cur ?? root;
 }
 
-/** Collect leaf blocks (no nested block) intersecting the range, in order. */
+// Leaf blocks (no nested block) the range touches, in order.
 function leafBlocksInRange(range: Range, root: HTMLElement): HTMLElement[] {
   const common =
     range.commonAncestorContainer instanceof HTMLElement
@@ -607,12 +511,10 @@ function leafBlocksInRange(range: Range, root: HTMLElement): HTMLElement[] {
       return false;
     }
   });
-  // Keep only leaves (drop blocks that contain another candidate block).
   const leaves = candidates.filter(
     (b) => !candidates.some((other) => other !== b && b.contains(other)),
   );
   if (leaves.length > 0) return leaves;
-  // Single-block fallback.
   const b = closestBlock(range.startContainer, root);
   return b ? [b] : [];
 }
@@ -631,7 +533,6 @@ function buildPart(
   const prefix = normStore(text.slice(Math.max(0, rawStart - contextLength), rawStart));
   const suffix = normStore(text.slice(rawEnd, rawEnd + contextLength));
 
-  // Occurrence index in normalised space (aligns with re-apply matching).
   const { norm, map } = buildNorm(text);
   const nStart = rawToNorm(map, rawStart);
   let occurrence = 0;
@@ -643,10 +544,7 @@ function buildPart(
   return { block, rawStart, rawEnd, exact, prefix, suffix, occurrence };
 }
 
-/**
- * Convert the current selection into one or more capture parts (one per block).
- * Returns an empty array if the selection is empty or whitespace-only.
- */
+// One capture part per block the selection touches.
 export function captureSelection(
   sel: Selection,
   root: HTMLElement,
@@ -671,7 +569,6 @@ export function captureSelection(
     return parts;
   }
 
-  // Multi-block: cover each block's portion.
   blocks.forEach((block, i) => {
     const { pieces, text } = collectTextNodes(block, settings.skipCodeBlocks);
     let rawStart = 0;
@@ -689,16 +586,8 @@ export function captureSelection(
   return parts;
 }
 
-/* ------------------------------------------------------------------ */
-/* Applying records (re-render path + live)                            */
-/* ------------------------------------------------------------------ */
-
-/**
- * Cheap pre-filter for {@link applyToContainer}: does this container plausibly
- * contain `rec`, either verbatim or in an edited form we could re-anchor to?
- * Returns true unless none of the record's distinctive anchors appear, so it
- * never hides a record that fuzzy matching could still place.
- */
+// Cheap pre-filter for applyToContainer: skip a record only when none of its
+// distinctive anchors appear here, so an edited span can still re-anchor.
 function mayContain(haystack: string, rec: HighlightRecord): boolean {
   const probes: string[] = [];
   const words = normStore(rec.exact).split(" ");
@@ -709,14 +598,12 @@ function mayContain(haystack: string, rec: HighlightRecord): boolean {
   if (pfx) probes.push(pfx.slice(-12));
   if (sfx) probes.push(sfx.slice(0, 12));
   const usable = probes.filter((p) => p.length >= 4);
-  if (usable.length === 0) return true; // nothing distinctive to test on
+  if (usable.length === 0) return true;
   return usable.some((p) => haystack.includes(p));
 }
 
-/**
- * Apply all records that occur within `container`. Safe to call repeatedly:
- * a record already present (by id) in this container is skipped.
- */
+// Apply every record found within `container`. Idempotent: a record already
+// wrapped (by id) here is skipped.
 export function applyToContainer(
   container: HTMLElement,
   records: HighlightRecord[],
@@ -727,23 +614,16 @@ export function applyToContainer(
   if (!haystack) return;
 
   for (const rec of records) {
-    // Cheap pre-filter: skip a record only when none of its distinctive anchors
-    // (first/last word of the selection, or a slice of the surrounding context)
-    // appear here — so an edit to the span itself still leaves the record a
-    // chance to re-anchor via findFuzzy.
     if (!mayContain(haystack, rec)) continue;
-    // Idempotency within this render pass.
     if (container.querySelector(`[${ATTR_ID}="${cssEscape(rec.id)}"]`)) continue;
 
-    const { pieces, text } = collectTextNodes(container, settings.skipCodeBlocks);
+    const { text } = collectTextNodes(container, settings.skipCodeBlocks);
     if (!text) break;
     const { norm, map } = buildNorm(text);
     const hit = findInNorm(norm, rec);
     if (!hit) continue;
     const rawStart = map[hit.s];
     const rawEnd = hit.e - 1 >= 0 ? map[hit.e - 1] + 1 : rawStart;
-    // pieces are recomputed inside wrapRange; we only needed `text`/`norm` here.
-    void pieces;
     wrapRange(
       container,
       rawStart,
@@ -754,7 +634,7 @@ export function applyToContainer(
   }
 }
 
-/** Live-wrap a freshly captured part (instant feedback before re-render). */
+// Wrap a freshly captured part right away, before the re-render.
 export function applyPartLive(
   part: CapturePart,
   rec: HighlightRecord,
@@ -769,7 +649,7 @@ export function applyPartLive(
   );
 }
 
-/** Remove every wrapper for `id` within `root`, merging the freed text. */
+// Remove every wrapper for `id`, merging the freed text back in.
 export function unwrapById(root: ParentNode, id: string): void {
   const els = root.querySelectorAll<HTMLElement>(`[${ATTR_ID}="${cssEscape(id)}"]`);
   els.forEach((el) => {
@@ -781,7 +661,7 @@ export function unwrapById(root: ParentNode, id: string): void {
   });
 }
 
-/** Restyle every wrapper for a group in-place (used when recolouring). */
+// Restyle every wrapper of a group in place (used when recolouring/converting).
 export function restyleGroup(
   root: ParentNode,
   groupId: string,
@@ -792,7 +672,6 @@ export function restyleGroup(
   els.forEach((el) => styleWrapper(el, rec, settings));
 }
 
-/** Minimal CSS attribute-value escape for use in selectors. */
 function cssEscape(value: string): string {
   if (typeof (window as unknown as { CSS?: { escape?: (v: string) => string } }).CSS?.escape === "function") {
     return (window as unknown as { CSS: { escape: (v: string) => string } }).CSS.escape(value);
